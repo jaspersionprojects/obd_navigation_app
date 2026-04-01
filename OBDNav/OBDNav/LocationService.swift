@@ -65,10 +65,8 @@ extension LocationService: CLLocationManagerDelegate {
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
-        let rawHeading = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
-        let normalizedHeading = rawHeading.truncatingRemainder(dividingBy: 360)
-        let positiveHeading = normalizedHeading >= 0 ? normalizedHeading : normalizedHeading + 360
-        compassHeadingDegrees = (360 - positiveHeading).truncatingRemainder(dividingBy: 360)
+        let normalizedHeading = newHeading.magneticHeading.truncatingRemainder(dividingBy: 360)
+        compassHeadingDegrees = normalizedHeading >= 0 ? normalizedHeading : normalizedHeading + 360
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
