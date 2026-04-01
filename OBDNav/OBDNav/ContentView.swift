@@ -24,11 +24,11 @@ struct ContentView: View {
         GeometryReader { proxy in
             ZStack(alignment: .bottom) {
                 mapLayer
-                statusCapsule
+                statusCapsule(topInset: proxy.safeAreaInsets.top)
                 DashboardPanel(
                     viewModel: viewModel,
-                    collapsedHeight: 200,
-                    expandedHeight: min(proxy.size.height * 0.58, 500)
+                    collapsedHeight: 176,
+                    expandedHeight: min(proxy.size.height * 0.66, 560)
                 )
             }
             .background(Color.white)
@@ -44,6 +44,22 @@ struct ContentView: View {
 
     private var mapLayer: some View {
         Map(position: $viewModel.cameraPosition, interactionModes: .all) {
+            if viewModel.gpsTrailCoordinates.count > 1 {
+                MapPolyline(coordinates: viewModel.gpsTrailCoordinates)
+                    .stroke(
+                        Color(red: 0.25, green: 0.62, blue: 0.97).opacity(0.9),
+                        style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round)
+                    )
+            }
+
+            if viewModel.obdTrailCoordinates.count > 1 {
+                MapPolyline(coordinates: viewModel.obdTrailCoordinates)
+                    .stroke(
+                        Color(red: 0.98, green: 0.48, blue: 0.20).opacity(0.88),
+                        style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round)
+                    )
+            }
+
             if let gpsCoordinate = viewModel.gpsCoordinate,
                let obdCoordinate = viewModel.obdCoordinate {
                 MapPolyline(coordinates: [gpsCoordinate, obdCoordinate])
@@ -66,7 +82,8 @@ struct ContentView: View {
                         title: "GPS",
                         systemImage: "location.fill",
                         tint: Color(red: 0.25, green: 0.62, blue: 0.97),
-                        labelPosition: .bottom
+                        labelPosition: .bottom,
+                        size: .compact
                     )
                 }
             }
@@ -77,7 +94,8 @@ struct ContentView: View {
                         title: "OBD",
                         systemImage: "scope",
                         tint: Color(red: 0.98, green: 0.48, blue: 0.20),
-                        labelPosition: .top
+                        labelPosition: .top,
+                        size: .compact
                     )
                 }
             }
@@ -85,7 +103,7 @@ struct ContentView: View {
         .mapStyle(.standard(elevation: .flat, emphasis: .muted))
     }
 
-    private var statusCapsule: some View {
+    private func statusCapsule(topInset: CGFloat) -> some View {
         VStack {
             HStack(spacing: 18) {
                 CompactStatusView(
@@ -110,11 +128,11 @@ struct ContentView: View {
                 Capsule(style: .continuous)
                     .fill(Color.black.opacity(0.88))
             )
-            .padding(.top, 18)
+            .padding(.top, topInset + 8)
 
             Spacer()
         }
-        .padding(.horizontal, 48)
+        .padding(.horizontal, 36)
         .allowsHitTesting(false)
     }
 }

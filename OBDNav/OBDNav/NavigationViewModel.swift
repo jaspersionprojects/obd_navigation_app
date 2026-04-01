@@ -14,6 +14,8 @@ import SwiftUI
 final class NavigationViewModel: ObservableObject {
     @Published var gpsCoordinate: CLLocationCoordinate2D?
     @Published var obdCoordinate: CLLocationCoordinate2D?
+    @Published var gpsTrailCoordinates: [CLLocationCoordinate2D] = []
+    @Published var obdTrailCoordinates: [CLLocationCoordinate2D] = []
     @Published var gpsSpeedKPH: Double = 0
     @Published var obdSpeedKPH: Double?
     @Published var headingDegrees: CLLocationDirection = 0
@@ -38,6 +40,8 @@ final class NavigationViewModel: ObservableObject {
     private let previewMode: Bool
     private var hasStarted = false
     private var hasInitializedCamera = false
+    private let trailMinimumStepMeters: CLLocationDistance = 1.5
+    private let maxTrailPoints = 1_200
 
     static let defaultRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 51.5074, longitude: -0.1278),
@@ -118,6 +122,7 @@ final class NavigationViewModel: ObservableObject {
     func snapOBDToGPS() {
         guard let gpsCoordinate else { return }
         obdCoordinate = gpsCoordinate
+        appendCoordinate(gpsCoordinate, to: &obdTrailCoordinates)
         updateGap()
     }
 
@@ -147,7 +152,7 @@ final class NavigationViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        locationService.$travelHeadingDegrees
+        locationService.$compassHeadingDegrees
             .receive(on: RunLoop.main)
             .sink { [weak self] heading in
                 guard let heading else { return }
@@ -195,9 +200,11 @@ final class NavigationViewModel: ObservableObject {
 
         gpsCoordinate = location.coordinate
         gpsSpeedKPH = max(location.speed, 0) * 3.6
+        appendCoordinate(location.coordinate, to: &gpsTrailCoordinates)
 
         if obdCoordinate == nil {
             obdCoordinate = location.coordinate
+            appendCoordinate(location.coordinate, to: &obdTrailCoordinates)
         }
 
         if !hasInitializedCamera {
@@ -228,16 +235,38 @@ final class NavigationViewModel: ObservableObject {
 
         guard delta > 0 else { return }
         guard let speedKPH = obdSpeedKPH, speedKPH > 0.5 else { return }
-        guard let heading = locationService.travelHeadingDegrees else { return }
+        guard let heading = locationService.compassHeadingDegrees else { return }
         guard let currentCoordinate = obdCoordinate else { return }
 
         let distanceMeters = (speedKPH / 3.6) * delta
-        obdCoordinate = DeadReckoning.advance(
+        let nextCoordinate = DeadReckoning.advance(
             from: currentCoordinate,
             distanceMeters: distanceMeters,
             bearingDegrees: heading
         )
+        obdCoordinate = nextCoordinate
+        appendCoordinate(nextCoordinate, to: &obdTrailCoordinates)
         updateGap()
+    }
+
+    private func appendCoordinate(
+        _ coordinate: CLLocationCoordinate2D,
+        to trail: inout [CLLocationCoordinate2D]
+    ) {
+        if let previous = trail.last {
+            let previousLocation = CLLocation(latitude: previous.latitude, longitude: previous.longitude)
+            let nextLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+
+            guard previousLocation.distance(from: nextLocation) >= trailMinimumStepMeters else {
+                return
+            }
+        }
+
+        trail.append(coordinate)
+
+        if trail.count > maxTrailPoints {
+            trail.removeFirst(trail.count - maxTrailPoints)
+        }
     }
 
     private func updateGap() {
@@ -264,6 +293,18 @@ final class NavigationViewModel: ObservableObject {
     private func seedPreviewState() {
         gpsCoordinate = CLLocationCoordinate2D(latitude: 51.50786, longitude: -0.12765)
         obdCoordinate = CLLocationCoordinate2D(latitude: 51.50762, longitude: -0.12688)
+        gpsTrailCoordinates = [
+            CLLocationCoordinate2D(latitude: 51.50820, longitude: -0.12835),
+            CLLocationCoordinate2D(latitude: 51.50805, longitude: -0.12805),
+            CLLocationCoordinate2D(latitude: 51.50795, longitude: -0.12785),
+            CLLocationCoordinate2D(latitude: 51.50786, longitude: -0.12765)
+        ]
+        obdTrailCoordinates = [
+            CLLocationCoordinate2D(latitude: 51.50808, longitude: -0.12795),
+            CLLocationCoordinate2D(latitude: 51.50792, longitude: -0.12755),
+            CLLocationCoordinate2D(latitude: 51.50774, longitude: -0.12718),
+            CLLocationCoordinate2D(latitude: 51.50762, longitude: -0.12688)
+        ]
         gpsSpeedKPH = 5.2
         obdSpeedKPH = 3.8
         headingDegrees = 96

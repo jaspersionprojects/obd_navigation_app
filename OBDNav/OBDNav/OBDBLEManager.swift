@@ -14,9 +14,14 @@ struct OBDDongle: Identifiable, Equatable {
     let id: UUID
     let name: String
     let rssi: Int
+    let isLikelyOBD: Bool
 
     var displayName: String {
-        name.isEmpty ? "Unnamed OBD dongle" : name
+        if !name.isEmpty {
+            return name
+        }
+
+        return "BLE Device \(id.uuidString.prefix(4))"
     }
 
     var signalIconName: String {
@@ -90,8 +95,13 @@ final class OBDBLEManager: NSObject, ObservableObject {
     private var hasStarted = false
 
     private let deviceNameTokens = [
-        "OBD", "ELM", "VEEPEAK", "VGATE", "KIWI", "SCAN", "CAR", "VLINK"
+        "OBD", "ELM", "VEEPEAK", "VGATE", "KIWI", "VLINK", "CARISTA", "CAN", "AUTO", "JV"
     ]
+    private let serviceUUIDTokens = [
+        "6E400001", "FFE0", "FFE1", "FFF0", "FFF1", "FFF2", "FFF3", "FFF4", "FFF5", "FFF6",
+        "AE00", "AE01", "1101"
+    ]
+    private lazy var knownOBDServiceUUIDs: [CBUUID] = serviceUUIDTokens.map(CBUUID.init(string:))
 
     func start() {
         hasStarted = true
@@ -111,6 +121,7 @@ final class OBDBLEManager: NSObject, ObservableObject {
         isDiscoveringDevices = true
 
         centralManager.stopScan()
+        addConnectedCandidates()
         centralManager.scanForPeripherals(
             withServices: nil,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
@@ -253,17 +264,39 @@ final class OBDBLEManager: NSObject, ObservableObject {
     }
 
     private func shouldList(peripheral: CBPeripheral, advertisementData: [String: Any]) -> Bool {
-        let name = peripheralDisplayName(for: peripheral, advertisementData: advertisementData).uppercased()
-        guard !name.isEmpty else { return false }
-        return deviceNameTokens.contains(where: name.contains)
+        if isLikelyOBD(peripheral: peripheral, advertisementData: advertisementData) {
+            return true
+        }
+
+        if let name = actualAdvertisedName(for: peripheral, advertisementData: advertisementData),
+           !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+
+        let serviceUUIDs = advertisedServiceUUIDStrings(from: advertisementData)
+        return !serviceUUIDs.isEmpty
+    }
+
+    private func isLikelyOBD(peripheral: CBPeripheral, advertisementData: [String: Any]) -> Bool {
+        if let name = actualAdvertisedName(for: peripheral, advertisementData: advertisementData)?.uppercased(),
+           deviceNameTokens.contains(where: name.contains) {
+            return true
+        }
+
+        let serviceUUIDs = advertisedServiceUUIDStrings(from: advertisementData)
+        return serviceUUIDs.contains { uuid in
+            serviceUUIDTokens.contains { uuid.contains($0) }
+        }
     }
 
     private func updateDiscoveredDevice(_ peripheral: CBPeripheral, advertisementData: [String: Any], rssi: Int) {
-        let name = peripheralDisplayName(for: peripheral, advertisementData: advertisementData)
+        let name = actualAdvertisedName(for: peripheral, advertisementData: advertisementData)
+            ?? peripheralDisplayName(for: peripheral, advertisementData: advertisementData)
+        let isLikelyOBD = isLikelyOBD(peripheral: peripheral, advertisementData: advertisementData)
         discoveredPeripherals[peripheral.identifier] = peripheral
         discoveredNames[peripheral.identifier] = name
 
-        let dongle = OBDDongle(id: peripheral.identifier, name: name, rssi: rssi)
+        let dongle = OBDDongle(id: peripheral.identifier, name: name, rssi: rssi, isLikelyOBD: isLikelyOBD)
 
         if let existingIndex = discoveredDevices.firstIndex(where: { $0.id == dongle.id }) {
             discoveredDevices[existingIndex] = dongle
@@ -271,22 +304,60 @@ final class OBDBLEManager: NSObject, ObservableObject {
             discoveredDevices.append(dongle)
         }
 
-        discoveredDevices.sort { $0.rssi > $1.rssi }
+        discoveredDevices.sort {
+            if $0.isLikelyOBD != $1.isLikelyOBD {
+                return $0.isLikelyOBD && !$1.isLikelyOBD
+            }
+
+            return $0.rssi > $1.rssi
+        }
+    }
+
+    private func addConnectedCandidates() {
+        guard !knownOBDServiceUUIDs.isEmpty else { return }
+
+        let connectedPeripherals = centralManager.retrieveConnectedPeripherals(withServices: knownOBDServiceUUIDs)
+
+        for peripheral in connectedPeripherals {
+            updateDiscoveredDevice(peripheral, advertisementData: [:], rssi: 0)
+        }
     }
 
     private func peripheralDisplayName(
         for peripheral: CBPeripheral,
         advertisementData: [String: Any]? = nil
     ) -> String {
-        if let localName = advertisementData?[CBAdvertisementDataLocalNameKey] as? String, !localName.isEmpty {
+        actualAdvertisedName(for: peripheral, advertisementData: advertisementData) ?? "Unnamed device"
+    }
+
+    private func actualAdvertisedName(
+        for peripheral: CBPeripheral,
+        advertisementData: [String: Any]? = nil
+    ) -> String? {
+        if let localName = advertisementData?[CBAdvertisementDataLocalNameKey] as? String,
+           !localName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return localName
         }
 
-        if let name = peripheral.name, !name.isEmpty {
+        if let name = peripheral.name,
+           !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return name
         }
 
-        return "Unnamed OBD dongle"
+        return nil
+    }
+
+    private func advertisedServiceUUIDStrings(from advertisementData: [String: Any]) -> [String] {
+        let uuidKeys = [
+            CBAdvertisementDataServiceUUIDsKey,
+            CBAdvertisementDataOverflowServiceUUIDsKey,
+            CBAdvertisementDataSolicitedServiceUUIDsKey
+        ]
+
+        return uuidKeys
+            .compactMap { advertisementData[$0] as? [CBUUID] }
+            .flatMap { $0 }
+            .map { $0.uuidString.uppercased() }
     }
 
     private static func extractVehicleSpeed(from response: String) -> Double? {

@@ -69,7 +69,7 @@ struct OBDDonglePickerSheet: View {
                 .font(.system(size: 24, weight: .bold, design: .rounded))
                 .foregroundStyle(.black)
 
-            Text("Tap a nearby BLE OBD dongle below to connect and start receiving speed data.")
+            Text("Tap a nearby BLE device below to connect. Likely OBD dongles are shown first.")
                 .font(.system(size: 14, weight: .medium, design: .rounded))
                 .foregroundStyle(Color.black.opacity(0.55))
         }
@@ -128,6 +128,12 @@ struct OBDDonglePickerSheet: View {
                     Text("RSSI \(dongle.rssi) dBm")
                         .font(.system(size: 13, weight: .medium, design: .rounded))
                         .foregroundStyle(Color.black.opacity(0.46))
+
+                    if dongle.isLikelyOBD {
+                        Text("Likely OBD dongle")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color(red: 0.95, green: 0.57, blue: 0.16))
+                    }
                 }
 
                 rowAccessory(for: dongle)

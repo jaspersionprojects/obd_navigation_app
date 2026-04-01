@@ -13,10 +13,9 @@ import Foundation
 final class LocationService: NSObject, ObservableObject {
     @Published private(set) var authorizationStatus: CLAuthorizationStatus = .notDetermined
     @Published private(set) var location: CLLocation?
-    @Published private(set) var travelHeadingDegrees: CLLocationDirection?
+    @Published private(set) var compassHeadingDegrees: CLLocationDirection?
 
     private let manager = CLLocationManager()
-    private var lastCompassHeading: CLLocationDirection?
 
     override init() {
         super.init()
@@ -63,21 +62,10 @@ extension LocationService: CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let latestLocation = locations.last else { return }
         location = latestLocation
-
-        if latestLocation.course >= 0 {
-            travelHeadingDegrees = latestLocation.course
-        } else if let lastCompassHeading {
-            travelHeadingDegrees = lastCompassHeading
-        }
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
-        let chosenHeading = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
-        lastCompassHeading = chosenHeading
-
-        if travelHeadingDegrees == nil || (location?.course ?? -1) < 0 {
-            travelHeadingDegrees = chosenHeading
-        }
+        compassHeadingDegrees = newHeading.magneticHeading
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {

@@ -78,71 +78,78 @@ struct DashboardPanel: View {
                 .tag(1)
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     private var telemetryPage: some View {
-        VStack(spacing: 14) {
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                StatCard(
-                    title: "GPS Speed",
-                    value: speedText(viewModel.gpsSpeedKPH),
-                    unit: "km/h",
-                    tint: Color(red: 0.66, green: 0.86, blue: 0.90)
-                )
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 12) {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    StatCard(
+                        title: "GPS Speed",
+                        value: speedTextInMPH(viewModel.gpsSpeedKPH),
+                        unit: "mph",
+                        tint: Color(red: 0.66, green: 0.86, blue: 0.90)
+                    )
 
-                StatCard(
-                    title: "OBD Speed",
-                    value: speedText(viewModel.obdSpeedKPH),
-                    unit: "km/h",
-                    tint: Color(red: 0.96, green: 0.90, blue: 0.72)
-                )
+                    StatCard(
+                        title: "OBD Speed",
+                        value: speedTextInMPH(viewModel.obdSpeedKPH),
+                        unit: "mph",
+                        tint: Color(red: 0.96, green: 0.90, blue: 0.72)
+                    )
 
-                StatCard(
-                    title: "Heading",
-                    value: "\(Int(viewModel.headingDegrees.rounded()))",
-                    unit: "deg",
-                    tint: Color(red: 0.90, green: 0.93, blue: 0.93)
-                )
+                    StatCard(
+                        title: "Heading",
+                        value: "\(Int(viewModel.headingDegrees.rounded()))",
+                        unit: "deg",
+                        tint: Color(red: 0.90, green: 0.93, blue: 0.93)
+                    )
 
-                StatCard(
-                    title: "GPS Gap",
-                    value: "\(Int(viewModel.gapMeters.rounded()))",
-                    unit: "m",
-                    tint: Color(red: 0.82, green: 0.93, blue: 0.79)
-                )
+                    StatCard(
+                        title: "GPS Gap",
+                        value: "\(Int(viewModel.gapMeters.rounded()))",
+                        unit: "m",
+                        tint: Color(red: 0.82, green: 0.93, blue: 0.79)
+                    )
+                }
+
+                HStack(alignment: .top, spacing: 12) {
+                    connectButton
+                    connectionStatusCard
+                }
+
+                snapButton
             }
-
-            HStack(spacing: 12) {
-                connectButton
-                connectionStatusCard
-            }
-
-            snapButton
+            .padding(.top, 2)
+            .padding(.bottom, 4)
         }
-        .padding(.top, 4)
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     private var futureControlsPage: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("Future Controls")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Future Controls")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
 
-            Text("This second slide is ready for the next buttons you want to add later.")
-                .font(.system(size: 15, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.74))
+                Text("This second slide is ready for the next buttons you want to add later.")
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.74))
 
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                PlaceholderButton(title: "Slot 1")
-                PlaceholderButton(title: "Slot 2")
-                PlaceholderButton(title: "Slot 3")
-                PlaceholderButton(title: "Slot 4")
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    PlaceholderButton(title: "Slot 1")
+                    PlaceholderButton(title: "Slot 2")
+                    PlaceholderButton(title: "Slot 3")
+                    PlaceholderButton(title: "Slot 4")
+                }
+
+                Spacer(minLength: 0)
             }
-
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(20)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(20)
         .background(
             RoundedRectangle(cornerRadius: 30, style: .continuous)
                 .fill(Color.black.opacity(0.96))
@@ -154,21 +161,22 @@ struct DashboardPanel: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     Image(systemName: "dot.radiowaves.left.and.right")
-                        .font(.system(size: 18, weight: .semibold))
+                        .font(.system(size: 16, weight: .semibold))
 
                     Text("Connect to OBD dongle")
-                        .font(.system(size: 18, weight: .semibold, design: .rounded))
+                        .font(.system(size: 16, weight: .semibold, design: .rounded))
                         .lineLimit(2)
                 }
 
                 Text(viewModel.connectButtonSubtitle)
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
                     .foregroundStyle(Color.black.opacity(0.48))
                     .multilineTextAlignment(.leading)
-                    .lineLimit(3)
+                    .lineLimit(2)
             }
-            .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
-            .padding(.horizontal, 18)
+            .frame(maxWidth: .infinity, minHeight: 84, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 2)
             .background(
                 RoundedRectangle(cornerRadius: 26, style: .continuous)
                     .fill(Color.white.opacity(0.55))
@@ -195,15 +203,15 @@ struct DashboardPanel: View {
             }
 
             Text(viewModel.obdStatusText)
-                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .font(.system(size: 16, weight: .bold, design: .rounded))
                 .foregroundStyle(.black)
-                .lineLimit(3)
+                .lineLimit(2)
 
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
-        .padding(.horizontal, 18)
-        .padding(.vertical, 16)
+        .frame(maxWidth: .infinity, minHeight: 84, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
         .background(
             RoundedRectangle(cornerRadius: 26, style: .continuous)
                 .fill(Color.white.opacity(0.5))
@@ -218,12 +226,12 @@ struct DashboardPanel: View {
         Button(action: viewModel.snapOBDToGPS) {
             HStack(spacing: 12) {
                 Image(systemName: "location.fill")
-                    .font(.system(size: 20, weight: .bold))
+                    .font(.system(size: 18, weight: .bold))
 
                 Text("Snap To GPS")
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .font(.system(size: 18, weight: .bold, design: .rounded))
             }
-            .frame(maxWidth: .infinity, minHeight: 76)
+            .frame(maxWidth: .infinity, minHeight: 68)
             .background(
                 RoundedRectangle(cornerRadius: 28, style: .continuous)
                     .fill(
@@ -320,9 +328,10 @@ struct DashboardPanel: View {
             .animation(.spring(response: 0.24, dampingFraction: 0.82), value: viewModel.selectedPanelPage)
     }
 
-    private func speedText(_ value: Double?) -> String {
+    private func speedTextInMPH(_ value: Double?) -> String {
         guard let value else { return "--" }
-        return value.formatted(.number.precision(.fractionLength(1)))
+        let milesPerHour = value * 0.621_371
+        return milesPerHour.formatted(.number.precision(.fractionLength(1)))
     }
 }
 
@@ -335,21 +344,21 @@ private struct StatCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title)
-                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
                 .foregroundStyle(Color.black.opacity(0.46))
 
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(value)
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
                     .foregroundStyle(.black)
 
                 Text(unit)
-                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
                     .foregroundStyle(Color.black.opacity(0.52))
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 122, alignment: .leading)
-        .padding(20)
+        .frame(maxWidth: .infinity, minHeight: 108, alignment: .leading)
+        .padding(18)
         .background(
             RoundedRectangle(cornerRadius: 28, style: .continuous)
                 .fill(tint.opacity(0.92))
@@ -385,14 +394,110 @@ enum MarkerLabelPosition {
     case bottom
 }
 
+enum MarkerBadgeSize {
+    case regular
+    case compact
+
+    var haloDiameter: CGFloat {
+        switch self {
+        case .regular:
+            return 70
+        case .compact:
+            return 52
+        }
+    }
+
+    var badgeDiameter: CGFloat {
+        switch self {
+        case .regular:
+            return 50
+        case .compact:
+            return 38
+        }
+    }
+
+    var iconSize: CGFloat {
+        switch self {
+        case .regular:
+            return 22
+        case .compact:
+            return 16
+        }
+    }
+
+    var ringWidth: CGFloat {
+        switch self {
+        case .regular:
+            return 4
+        case .compact:
+            return 3
+        }
+    }
+
+    var shadowRadius: CGFloat {
+        switch self {
+        case .regular:
+            return 16
+        case .compact:
+            return 11
+        }
+    }
+
+    var shadowYOffset: CGFloat {
+        switch self {
+        case .regular:
+            return 8
+        case .compact:
+            return 5
+        }
+    }
+
+    var labelFontSize: CGFloat {
+        switch self {
+        case .regular:
+            return 12
+        case .compact:
+            return 10
+        }
+    }
+
+    var labelHorizontalPadding: CGFloat {
+        switch self {
+        case .regular:
+            return 8
+        case .compact:
+            return 7
+        }
+    }
+
+    var labelVerticalPadding: CGFloat {
+        switch self {
+        case .regular:
+            return 3
+        case .compact:
+            return 2.5
+        }
+    }
+
+    var spacing: CGFloat {
+        switch self {
+        case .regular:
+            return 4
+        case .compact:
+            return 3
+        }
+    }
+}
+
 struct MarkerBadge: View {
     let title: String
     let systemImage: String
     let tint: Color
     let labelPosition: MarkerLabelPosition
+    let size: MarkerBadgeSize
 
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: size.spacing) {
             if labelPosition == .top {
                 markerLabel
             }
@@ -400,21 +505,21 @@ struct MarkerBadge: View {
             ZStack {
                 Circle()
                     .fill(tint.opacity(0.22))
-                    .frame(width: 70, height: 70)
+                    .frame(width: size.haloDiameter, height: size.haloDiameter)
 
                 Circle()
                     .fill(tint)
-                    .frame(width: 50, height: 50)
+                    .frame(width: size.badgeDiameter, height: size.badgeDiameter)
                     .overlay(
                         Circle()
-                            .stroke(Color.white, lineWidth: 4)
+                            .stroke(Color.white, lineWidth: size.ringWidth)
                     )
 
                 Image(systemName: systemImage)
-                    .font(.system(size: 22, weight: .bold))
+                    .font(.system(size: size.iconSize, weight: .bold))
                     .foregroundStyle(.white)
             }
-            .shadow(color: tint.opacity(0.4), radius: 16, x: 0, y: 8)
+            .shadow(color: tint.opacity(0.4), radius: size.shadowRadius, x: 0, y: size.shadowYOffset)
 
             if labelPosition == .bottom {
                 markerLabel
@@ -424,10 +529,10 @@ struct MarkerBadge: View {
 
     private var markerLabel: some View {
         Text(title)
-            .font(.system(size: 12, weight: .bold, design: .rounded))
+            .font(.system(size: size.labelFontSize, weight: .bold, design: .rounded))
             .foregroundStyle(.black)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
+            .padding(.horizontal, size.labelHorizontalPadding)
+            .padding(.vertical, size.labelVerticalPadding)
             .background(
                 Capsule(style: .continuous)
                     .fill(Color.white.opacity(0.9))
