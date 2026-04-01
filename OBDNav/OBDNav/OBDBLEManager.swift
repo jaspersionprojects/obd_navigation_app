@@ -228,7 +228,7 @@ final class OBDBLEManager: NSObject, ObservableObject {
 
             while !Task.isCancelled {
                 send("010D")
-                try? await Task.sleep(for: .seconds(1))
+                try? await Task.sleep(for: .milliseconds(83))
             }
         }
     }

@@ -222,7 +222,7 @@ final class NavigationViewModel: ObservableObject {
             guard let self else { return }
 
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(250))
+                try? await Task.sleep(for: .milliseconds(83))
                 self.advanceOBDMarker()
             }
         }
