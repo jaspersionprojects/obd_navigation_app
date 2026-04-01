@@ -89,7 +89,7 @@ final class OBDBLEManager: NSObject, ObservableObject {
     private var activePeripheral: CBPeripheral?
     private var pendingPeripheralToConnect: CBPeripheral?
     private var writeCharacteristic: CBCharacteristic?
-    private var notifyCharacteristic: CBCharacteristic?
+    private var responseCharacteristic: CBCharacteristic?
     private var pollTask: Task<Void, Never>?
     private var responseBuffer = ""
     private var hasStarted = false
@@ -175,7 +175,7 @@ final class OBDBLEManager: NSObject, ObservableObject {
         activePeripheral = nil
         pendingPeripheralToConnect = nil
         writeCharacteristic = nil
-        notifyCharacteristic = nil
+        responseCharacteristic = nil
         responseBuffer = ""
         speedKPH = nil
         connectingDeviceID = nil
@@ -188,7 +188,7 @@ final class OBDBLEManager: NSObject, ObservableObject {
         responseBuffer = ""
         speedKPH = nil
         writeCharacteristic = nil
-        notifyCharacteristic = nil
+        responseCharacteristic = nil
 
         let displayName = knownName ?? discoveredNames[peripheral.identifier] ?? peripheralDisplayName(for: peripheral)
         connectingDeviceID = peripheral.identifier
@@ -247,6 +247,13 @@ final class OBDBLEManager: NSObject, ObservableObject {
             : .withoutResponse
 
         activePeripheral.writeValue(data, for: writeCharacteristic, type: writeType)
+
+        if let responseCharacteristic,
+           responseCharacteristic.properties.contains(.read),
+           !responseCharacteristic.properties.contains(.notify),
+           !responseCharacteristic.properties.contains(.indicate) {
+            activePeripheral.readValue(for: responseCharacteristic)
+        }
     }
 
     private func handleIncomingData(_ data: Data) {
@@ -361,13 +368,7 @@ final class OBDBLEManager: NSObject, ObservableObject {
     }
 
     private static func extractVehicleSpeed(from response: String) -> Double? {
-        let cleaned = response.map { character -> Character in
-            character.isHexDigit ? character : " "
-        }
-
-        let bytes = String(cleaned)
-            .split(whereSeparator: \.isWhitespace)
-            .map(String.init)
+        let bytes = hexByteStrings(from: response)
 
         guard bytes.count >= 3 else { return nil }
 
@@ -377,6 +378,22 @@ final class OBDBLEManager: NSObject, ObservableObject {
         }
 
         return nil
+    }
+
+    private static func hexByteStrings(from response: String) -> [String] {
+        var bytes: [String] = []
+        var pendingNibble: Character?
+
+        for character in response.uppercased() where character.isHexDigit {
+            if let nibble = pendingNibble {
+                bytes.append(String([nibble, character]))
+                pendingNibble = nil
+            } else {
+                pendingNibble = character
+            }
+        }
+
+        return bytes
     }
 }
 
@@ -411,7 +428,7 @@ extension OBDBLEManager: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         stopPolling()
         writeCharacteristic = nil
-        notifyCharacteristic = nil
+        responseCharacteristic = nil
         speedKPH = nil
         connectedDeviceID = nil
         activePeripheral = nil
@@ -458,19 +475,24 @@ extension OBDBLEManager: CBPeripheralDelegate {
         }
 
         service.characteristics?.forEach { characteristic in
-            if notifyCharacteristic == nil,
-               characteristic.properties.contains(.notify) || characteristic.properties.contains(.indicate) {
-                notifyCharacteristic = characteristic
-                peripheral.setNotifyValue(true, for: characteristic)
-            }
-
             if writeCharacteristic == nil,
                characteristic.properties.contains(.write) || characteristic.properties.contains(.writeWithoutResponse) {
                 writeCharacteristic = characteristic
             }
+
+            if responseCharacteristic == nil,
+               characteristic.properties.contains(.notify) ||
+               characteristic.properties.contains(.indicate) ||
+               characteristic.properties.contains(.read) {
+                responseCharacteristic = characteristic
+
+                if characteristic.properties.contains(.notify) || characteristic.properties.contains(.indicate) {
+                    peripheral.setNotifyValue(true, for: characteristic)
+                }
+            }
         }
 
-        if writeCharacteristic != nil, notifyCharacteristic != nil {
+        if writeCharacteristic != nil, responseCharacteristic != nil {
             connectedDeviceID = peripheral.identifier
             connectingDeviceID = nil
             connectionState = .connected(peripheralDisplayName(for: peripheral))
