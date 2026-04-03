@@ -30,9 +30,11 @@ final class NavigationViewModel: ObservableObject {
     @Published private(set) var discoveredDongles: [OBDDongle] = []
     @Published private(set) var connectingDongleID: UUID?
     @Published private(set) var connectedDongleID: UUID?
+    @Published private(set) var isStationaryByIMU = false
 
     let locationService: LocationService
     let obdManager: OBDBLEManager
+    let motionService: MotionService
 
     private var cancellables = Set<AnyCancellable>()
     private var deadReckoningTask: Task<Void, Never>?
@@ -41,7 +43,10 @@ final class NavigationViewModel: ObservableObject {
     private var hasStarted = false
     private var hasInitializedCamera = false
     private let trailMinimumStepMeters: CLLocationDistance = 1.5
-    private let maxTrailPoints = 1_200
+    private let maxTrailPoints = 4_000
+    private var stationaryDetector = StationaryDetector()
+    private var stationaryVelocityHoldActive = false
+    private var reportedOBDSpeedKPH: Double?
 
     static let defaultRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 51.5074, longitude: -0.1278),
@@ -87,6 +92,7 @@ final class NavigationViewModel: ObservableObject {
         self.init(
             locationService: LocationService(),
             obdManager: OBDBLEManager(),
+            motionService: MotionService(),
             previewMode: previewMode
         )
     }
@@ -94,10 +100,12 @@ final class NavigationViewModel: ObservableObject {
     init(
         locationService: LocationService,
         obdManager: OBDBLEManager,
+        motionService: MotionService,
         previewMode: Bool = false
     ) {
         self.locationService = locationService
         self.obdManager = obdManager
+        self.motionService = motionService
         self.previewMode = previewMode
 
         if previewMode {
@@ -116,6 +124,7 @@ final class NavigationViewModel: ObservableObject {
         hasStarted = true
         locationService.start()
         obdManager.start()
+        motionService.start()
         startDeadReckoningLoop()
     }
 
@@ -160,11 +169,17 @@ final class NavigationViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
+        motionService.$latestSample
+            .receive(on: RunLoop.main)
+            .sink { [weak self] sample in
+                self?.handleMotionSample(sample)
+            }
+            .store(in: &cancellables)
+
         obdManager.$speedKPH
             .receive(on: RunLoop.main)
             .sink { [weak self] speedKPH in
-                self?.obdSpeedKPH = speedKPH
-                self?.updateGap()
+                self?.handleReportedOBDSpeed(speedKPH)
             }
             .store(in: &cancellables)
 
@@ -174,6 +189,10 @@ final class NavigationViewModel: ObservableObject {
                 self?.obdConnectionState = state
                 if case .connected = state {
                     self?.isShowingDevicePicker = false
+                } else if case .connecting = state {
+                    self?.resetStationaryHold()
+                } else {
+                    self?.resetStationaryState()
                 }
             }
             .store(in: &cancellables)
@@ -211,6 +230,63 @@ final class NavigationViewModel: ObservableObject {
             centerCameraInitially(on: location.coordinate)
         }
 
+        updateGap()
+    }
+
+    private func handleMotionSample(_ sample: MotionSample?) {
+        guard let sample else { return }
+
+        isStationaryByIMU = stationaryDetector.update(
+            correctedAccelerationG: sample.correctedAccelerationG,
+            correctedRotationRateRadPerSec: sample.correctedRotationRateRadPerSec,
+            currentHeadingDegrees: locationService.compassHeadingDegrees
+        )
+
+        applyEffectiveOBDSpeed()
+    }
+
+    private func handleReportedOBDSpeed(_ speedKPH: Double?) {
+        reportedOBDSpeedKPH = speedKPH
+        applyEffectiveOBDSpeed()
+    }
+
+    private func applyEffectiveOBDSpeed() {
+        let rawSpeedKPH = reportedOBDSpeedKPH
+
+        if stationaryVelocityHoldActive {
+            if let rawSpeedKPH, rawSpeedKPH <= 0 {
+                stationaryVelocityHoldActive = false
+            } else if rawSpeedKPH == nil {
+                stationaryVelocityHoldActive = false
+            } else {
+                obdSpeedKPH = 0
+                updateGap()
+                return
+            }
+        }
+
+        if isStationaryByIMU, rawSpeedKPH != nil {
+            stationaryVelocityHoldActive = true
+            obdSpeedKPH = 0
+        } else {
+            obdSpeedKPH = rawSpeedKPH
+        }
+
+        updateGap()
+    }
+
+    private func resetStationaryHold() {
+        stationaryVelocityHoldActive = false
+        obdSpeedKPH = reportedOBDSpeedKPH
+        updateGap()
+    }
+
+    private func resetStationaryState() {
+        stationaryDetector.reset()
+        isStationaryByIMU = false
+        stationaryVelocityHoldActive = false
+        reportedOBDSpeedKPH = nil
+        obdSpeedKPH = nil
         updateGap()
     }
 
@@ -265,8 +341,30 @@ final class NavigationViewModel: ObservableObject {
         trail.append(coordinate)
 
         if trail.count > maxTrailPoints {
-            trail.removeFirst(trail.count - maxTrailPoints)
+            compactTrail(&trail)
         }
+    }
+
+    private func compactTrail(_ trail: inout [CLLocationCoordinate2D]) {
+        guard trail.count > maxTrailPoints else { return }
+
+        var compacted: [CLLocationCoordinate2D] = []
+        compacted.reserveCapacity((trail.count / 2) + 1)
+
+        for (index, coordinate) in trail.enumerated() where index.isMultiple(of: 2) {
+            compacted.append(coordinate)
+        }
+
+        if let lastCoordinate = trail.last,
+           let compactedLast = compacted.last,
+           compactedLast.latitude != lastCoordinate.latitude ||
+           compactedLast.longitude != lastCoordinate.longitude {
+            compacted.append(lastCoordinate)
+        } else if let lastCoordinate = trail.last, compacted.isEmpty {
+            compacted.append(lastCoordinate)
+        }
+
+        trail = compacted
     }
 
     private func updateGap() {
@@ -307,10 +405,12 @@ final class NavigationViewModel: ObservableObject {
         ]
         gpsSpeedKPH = 5.2
         obdSpeedKPH = 3.8
+        reportedOBDSpeedKPH = 3.8
         headingDegrees = 96
         gapMeters = 31
         selectedPanelPage = 0
         isPanelExpanded = true
+        isStationaryByIMU = false
         cameraPosition = .region(
             MKCoordinateRegion(
                 center: CLLocationCoordinate2D(latitude: 51.50755, longitude: -0.1271),

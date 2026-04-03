@@ -257,7 +257,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "OBDNav uses Bluetooth to connect to your OBD dongle and read live vehicle speed data.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "OBDNav uses your GPS position and heading to anchor the OBD marker and compare it with the live map location.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "OBDNav uses your GPS position to anchor the OBD marker initially and compare it with the live map location.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "OBDNav uses motion sensors to detect when the car is stationary and hold the OBD marker at zero speed.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -292,7 +293,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "OBDNav uses Bluetooth to connect to your OBD dongle and read live vehicle speed data.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "OBDNav uses your GPS position and heading to anchor the OBD marker and compare it with the live map location.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "OBDNav uses your GPS position to anchor the OBD marker initially and compare it with the live map location.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "OBDNav uses motion sensors to detect when the car is stationary and hold the OBD marker at zero speed.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
