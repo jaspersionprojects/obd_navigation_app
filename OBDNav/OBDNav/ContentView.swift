@@ -62,6 +62,18 @@ struct ContentView: View {
                         )
                 }
 
+                if viewModel.shouldShowRoadLockOverlay {
+                    ForEach(Array(viewModel.roadLockTrailSegments.enumerated()), id: \.offset) { _, segment in
+                        if segment.count > 1 {
+                            MapPolyline(coordinates: segment)
+                                .stroke(
+                                    Color(red: 0.96, green: 0.26, blue: 0.66).opacity(0.92),
+                                    style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round)
+                                )
+                        }
+                    }
+                }
+
                 if viewModel.calibrationGuideCoordinates.count == 2 {
                     MapPolyline(coordinates: viewModel.calibrationGuideCoordinates)
                         .stroke(
@@ -135,6 +147,19 @@ struct ContentView: View {
                             title: "OBD",
                             systemImage: "scope",
                             tint: Color(red: 0.98, green: 0.48, blue: 0.20),
+                            labelPosition: .top,
+                            size: .compact
+                        )
+                    }
+                }
+
+                if viewModel.shouldShowRoadLockOverlay,
+                   let roadLockCoordinate = viewModel.roadLockCoordinate {
+                    Annotation("Road Lock", coordinate: roadLockCoordinate, anchor: .center) {
+                        MarkerBadge(
+                            title: "LOCK",
+                            systemImage: "lock.fill",
+                            tint: Color(red: 0.96, green: 0.26, blue: 0.66),
                             labelPosition: .top,
                             size: .compact
                         )

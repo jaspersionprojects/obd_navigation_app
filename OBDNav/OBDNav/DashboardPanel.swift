@@ -169,6 +169,37 @@ struct DashboardPanel: View {
                 }
                 .buttonStyle(.plain)
 
+                Button(action: viewModel.toggleRoadLock) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 10) {
+                            Image(systemName: viewModel.isRoadLockEnabled ? "lock.fill" : "lock.open.fill")
+                                .font(.system(size: 19, weight: .bold))
+
+                            Text(viewModel.roadLockButtonTitle)
+                                .font(.system(size: 18, weight: .bold, design: .rounded))
+                                .lineLimit(2)
+                        }
+
+                        Text(viewModel.roadLockButtonSubtitle)
+                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                            .foregroundStyle(Color.black.opacity(0.58))
+                            .multilineTextAlignment(.leading)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 26, style: .continuous)
+                            .fill(viewModel.isRoadLockEnabled ? Color(red: 1.0, green: 0.82, blue: 0.92) : Color.white)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 26, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+                    )
+                    .foregroundStyle(.black)
+                }
+                .buttonStyle(.plain)
+
                 VStack(alignment: .leading, spacing: 14) {
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 6) {
@@ -210,15 +241,39 @@ struct DashboardPanel: View {
                 )
 
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("More controls can still be added here later.")
-                        .font(.system(size: 14, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.46))
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(viewModel.roadLockStatusTitle)
+                                .font(.system(size: 16, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
 
-                    HStack(spacing: 12) {
-                        PlaceholderButton(title: "Slot 1")
-                        PlaceholderButton(title: "Slot 2")
+                            Text(viewModel.roadLockStatusMessage)
+                                .font(.system(size: 14, weight: .medium, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.7))
+                        }
+
+                        Spacer(minLength: 12)
+
+                        Circle()
+                            .fill(viewModel.isRoadLockEnabled ? Color(red: 0.96, green: 0.26, blue: 0.66) : Color.white.opacity(0.24))
+                            .frame(width: 14, height: 14)
+                            .padding(.top, 4)
                     }
+
+                    Text("The pink marker and pink line only appear while the recent OBD route confidently matches nearby roads.")
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.82))
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(18)
+                .background(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                )
 
                 Spacer(minLength: 0)
             }

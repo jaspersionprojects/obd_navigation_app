@@ -37,6 +37,11 @@ final class NavigationViewModel: ObservableObject {
     @Published private(set) var compassCalibrationTapCoordinate: CLLocationCoordinate2D?
     @Published private(set) var compassCalibrationOffsetDegrees: CLLocationDirection = 0
     @Published private(set) var compassCalibrationMessage = "Tap a road to calibrate the compass."
+    @Published private(set) var isRoadLockEnabled = false
+    @Published private(set) var isResolvingRoadLock = false
+    @Published private(set) var roadLockCoordinate: CLLocationCoordinate2D?
+    @Published private(set) var roadLockTrailSegments: [[CLLocationCoordinate2D]] = []
+    @Published private(set) var roadLockStatusMessage = "Road lock is off."
 
     let locationService: LocationService
     let obdManager: OBDBLEManager
@@ -45,6 +50,7 @@ final class NavigationViewModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var deadReckoningTask: Task<Void, Never>?
     private var compassCalibrationTask: Task<Void, Never>?
+    private var roadLockTask: Task<Void, Never>?
     private var lastTick = Date()
     private let previewMode: Bool
     private var hasStarted = false
@@ -55,8 +61,14 @@ final class NavigationViewModel: ObservableObject {
     private var stationaryVelocityHoldActive = false
     private var reportedOBDSpeedKPH: Double?
     private var rawCompassHeadingDegrees: CLLocationDirection?
+    private var activeRoadLockRouteCoordinates: [CLLocationCoordinate2D] = []
+    private var isRoadLockSegmentOpen = false
+    private var lastRoadLockRefreshDate = Date.distantPast
+    private var lastRoadLockRefreshCoordinate: CLLocationCoordinate2D?
 
     private static let compassCalibrationOffsetDefaultsKey = "CompassCalibrationOffsetDegrees"
+    private static let roadLockRefreshInterval: TimeInterval = 0.9
+    private static let roadLockRefreshDistanceMeters: CLLocationDistance = 10
 
     static let defaultRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 51.5074, longitude: -0.1278),
@@ -138,6 +150,46 @@ final class NavigationViewModel: ObservableObject {
         return "Compass Offset"
     }
 
+    var roadLockButtonTitle: String {
+        isRoadLockEnabled ? "Road Lock On" : "Road Lock"
+    }
+
+    var roadLockButtonSubtitle: String {
+        if isResolvingRoadLock {
+            return "Matching the recent route to nearby roads"
+        }
+
+        if isRoadLockEnabled, roadLockCoordinate != nil {
+            return "Pink marker is following the matched road path"
+        }
+
+        if isRoadLockEnabled {
+            return "Waiting for a confident road fit nearby"
+        }
+
+        return "Map the raw OBD route onto nearby roads"
+    }
+
+    var roadLockStatusTitle: String {
+        if isResolvingRoadLock {
+            return "Matching Nearby Roads"
+        }
+
+        if isRoadLockEnabled, roadLockCoordinate != nil {
+            return "Road Lock Active"
+        }
+
+        if isRoadLockEnabled {
+            return "Awaiting Road Fit"
+        }
+
+        return "Road Lock Off"
+    }
+
+    var shouldShowRoadLockOverlay: Bool {
+        isRoadLockEnabled
+    }
+
     var calibrationOverlayText: String? {
         guard isCompassCalibrationActive || compassCalibrationCandidate != nil || isResolvingCompassCalibrationRoad else {
             return nil
@@ -210,6 +262,7 @@ final class NavigationViewModel: ObservableObject {
     deinit {
         deadReckoningTask?.cancel()
         compassCalibrationTask?.cancel()
+        roadLockTask?.cancel()
     }
 
     func start() {
@@ -225,6 +278,10 @@ final class NavigationViewModel: ObservableObject {
         guard let gpsCoordinate else { return }
         obdCoordinate = gpsCoordinate
         appendCoordinate(gpsCoordinate, to: &obdTrailCoordinates)
+        if isRoadLockEnabled {
+            resetActiveRoadLockRoute()
+            refreshRoadLockIfNeeded(force: true)
+        }
         updateGap()
     }
 
@@ -244,6 +301,14 @@ final class NavigationViewModel: ObservableObject {
 
     func selectOBDDongle(_ dongle: OBDDongle) {
         obdManager.connect(to: dongle)
+    }
+
+    func toggleRoadLock() {
+        if isRoadLockEnabled {
+            disableRoadLock()
+        } else {
+            enableRoadLock()
+        }
     }
 
     func toggleCompassCalibration() {
@@ -371,6 +436,10 @@ final class NavigationViewModel: ObservableObject {
         if obdCoordinate == nil {
             obdCoordinate = location.coordinate
             appendCoordinate(location.coordinate, to: &obdTrailCoordinates)
+
+            if isRoadLockEnabled {
+                refreshRoadLockIfNeeded(force: true)
+            }
         }
 
         if !hasInitializedCamera {
@@ -434,6 +503,11 @@ final class NavigationViewModel: ObservableObject {
         stationaryVelocityHoldActive = false
         reportedOBDSpeedKPH = nil
         obdSpeedKPH = nil
+        if isRoadLockEnabled {
+            roadLockCoordinate = nil
+            roadLockStatusMessage = "Road lock is waiting for fresh OBD movement."
+            resetActiveRoadLockRoute()
+        }
         updateGap()
     }
 
@@ -456,6 +530,11 @@ final class NavigationViewModel: ObservableObject {
         let delta = now.timeIntervalSince(lastTick)
         lastTick = now
 
+        if isRoadLockEnabled, let currentCoordinate = obdCoordinate {
+            updateRoadLockProjection(using: currentCoordinate)
+            refreshRoadLockIfNeeded()
+        }
+
         guard delta > 0 else { return }
         guard let speedKPH = obdSpeedKPH, speedKPH > 0.5 else { return }
         guard let heading = calibratedCompassHeadingDegrees else { return }
@@ -469,6 +548,10 @@ final class NavigationViewModel: ObservableObject {
         )
         obdCoordinate = nextCoordinate
         appendCoordinate(nextCoordinate, to: &obdTrailCoordinates)
+        if isRoadLockEnabled {
+            updateRoadLockProjection(using: nextCoordinate)
+            refreshRoadLockIfNeeded()
+        }
         updateGap()
     }
 
@@ -512,6 +595,22 @@ final class NavigationViewModel: ObservableObject {
         }
 
         trail = compacted
+    }
+
+    private func appendRoadLockCoordinate(_ coordinate: CLLocationCoordinate2D) {
+        if !isRoadLockSegmentOpen || roadLockTrailSegments.isEmpty {
+            roadLockTrailSegments.append([coordinate])
+            isRoadLockSegmentOpen = true
+            return
+        }
+
+        var currentSegment = roadLockTrailSegments.removeLast()
+        appendCoordinate(coordinate, to: &currentSegment)
+        roadLockTrailSegments.append(currentSegment)
+    }
+
+    private func breakRoadLockSegment() {
+        isRoadLockSegmentOpen = false
     }
 
     private func updateGap() {
@@ -585,6 +684,121 @@ final class NavigationViewModel: ObservableObject {
         headingDegrees = calibratedCompassHeadingDegrees
     }
 
+    private func enableRoadLock() {
+        isRoadLockEnabled = true
+        isResolvingRoadLock = false
+        roadLockStatusMessage = "Matching the recent route to nearby roads."
+        roadLockCoordinate = nil
+        roadLockTrailSegments = []
+        resetActiveRoadLockRoute()
+        refreshRoadLockIfNeeded(force: true)
+    }
+
+    private func disableRoadLock() {
+        roadLockTask?.cancel()
+        roadLockTask = nil
+        isRoadLockEnabled = false
+        isResolvingRoadLock = false
+        roadLockCoordinate = nil
+        roadLockStatusMessage = "Road lock is off."
+        resetActiveRoadLockRoute()
+    }
+
+    private func resetActiveRoadLockRoute() {
+        activeRoadLockRouteCoordinates = []
+        breakRoadLockSegment()
+        lastRoadLockRefreshCoordinate = nil
+        lastRoadLockRefreshDate = .distantPast
+    }
+
+    private func refreshRoadLockIfNeeded(force: Bool = false) {
+        guard isRoadLockEnabled else { return }
+        guard roadLockTask == nil else { return }
+        guard let currentCoordinate = obdCoordinate else { return }
+        guard obdTrailCoordinates.count >= 4 else {
+            roadLockStatusMessage = "Drive a little farther before road lock can fit the route."
+            return
+        }
+
+        if !force {
+            let timeSinceRefresh = Date().timeIntervalSince(lastRoadLockRefreshDate)
+            let distanceSinceRefresh = lastRoadLockRefreshCoordinate.map {
+                CLLocation(latitude: $0.latitude, longitude: $0.longitude)
+                    .distance(from: CLLocation(latitude: currentCoordinate.latitude, longitude: currentCoordinate.longitude))
+            } ?? .greatestFiniteMagnitude
+
+            guard
+                timeSinceRefresh >= Self.roadLockRefreshInterval ||
+                distanceSinceRefresh >= Self.roadLockRefreshDistanceMeters ||
+                activeRoadLockRouteCoordinates.isEmpty
+            else {
+                return
+            }
+        }
+
+        let rawTrail = obdTrailCoordinates
+        let heading = calibratedCompassHeadingDegrees
+        isResolvingRoadLock = true
+
+        roadLockTask = Task { [weak self] in
+            guard let self else { return }
+
+            let match = await RoadLockMatcher.match(
+                rawTrail: rawTrail,
+                currentCoordinate: currentCoordinate,
+                currentHeadingDegrees: heading
+            )
+
+            guard !Task.isCancelled else { return }
+
+            self.roadLockTask = nil
+            self.isResolvingRoadLock = false
+            self.lastRoadLockRefreshDate = Date()
+            self.lastRoadLockRefreshCoordinate = currentCoordinate
+
+            guard self.isRoadLockEnabled else { return }
+
+            if let match {
+                self.activeRoadLockRouteCoordinates = match.routeCoordinates
+                self.roadLockStatusMessage = "Road lock is following the nearest matching road path."
+                self.updateRoadLockProjection(using: currentCoordinate)
+            } else {
+                self.activeRoadLockRouteCoordinates = []
+                self.roadLockCoordinate = nil
+                self.breakRoadLockSegment()
+                self.roadLockStatusMessage = "No strong road fit nearby right now."
+            }
+        }
+    }
+
+    private func updateRoadLockProjection(using rawCoordinate: CLLocationCoordinate2D) {
+        guard isRoadLockEnabled else { return }
+        guard !activeRoadLockRouteCoordinates.isEmpty else {
+            roadLockCoordinate = nil
+            breakRoadLockSegment()
+            return
+        }
+
+        guard let projection = RoadLockMatcher.snap(
+            rawCoordinate,
+            to: activeRoadLockRouteCoordinates,
+            currentHeadingDegrees: calibratedCompassHeadingDegrees
+        ) else {
+            roadLockCoordinate = nil
+            breakRoadLockSegment()
+            if !isResolvingRoadLock {
+                roadLockStatusMessage = "Holding for a better nearby road fit."
+            }
+            return
+        }
+
+        roadLockCoordinate = projection.coordinate
+        appendRoadLockCoordinate(projection.coordinate)
+        if !isResolvingRoadLock {
+            roadLockStatusMessage = "Road lock is following the nearest matching road path."
+        }
+    }
+
     private var calibratedCompassHeadingDegrees: CLLocationDirection? {
         guard let rawCompassHeadingDegrees else { return nil }
         return normalizeDegrees(rawCompassHeadingDegrees + compassCalibrationOffsetDegrees)
@@ -633,6 +847,15 @@ final class NavigationViewModel: ObservableObject {
         isPanelExpanded = true
         isStationaryByIMU = false
         compassCalibrationMessage = "Saved offset +4.5°"
+        isRoadLockEnabled = true
+        roadLockCoordinate = CLLocationCoordinate2D(latitude: 51.50768, longitude: -0.12702)
+        roadLockTrailSegments = [[
+            CLLocationCoordinate2D(latitude: 51.50802, longitude: -0.12772),
+            CLLocationCoordinate2D(latitude: 51.50788, longitude: -0.12746),
+            CLLocationCoordinate2D(latitude: 51.50778, longitude: -0.12724),
+            CLLocationCoordinate2D(latitude: 51.50768, longitude: -0.12702)
+        ]]
+        roadLockStatusMessage = "Road lock is following the nearest matching road path."
         cameraPosition = .region(
             MKCoordinateRegion(
                 center: CLLocationCoordinate2D(latitude: 51.50755, longitude: -0.1271),
