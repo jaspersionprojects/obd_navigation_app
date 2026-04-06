@@ -130,19 +130,94 @@ struct DashboardPanel: View {
     private var futureControlsPage: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 18) {
-                Text("Future Controls")
+                Text("Controls")
                     .font(.system(size: 28, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
 
-                Text("This second slide is ready for the next buttons you want to add later.")
+                Text("Calibrate the compass by tapping the road on the map and choosing the direction you are travelling.")
                     .font(.system(size: 15, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.74))
 
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                    PlaceholderButton(title: "Slot 1")
-                    PlaceholderButton(title: "Slot 2")
-                    PlaceholderButton(title: "Slot 3")
-                    PlaceholderButton(title: "Slot 4")
+                Button(action: viewModel.toggleCompassCalibration) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 10) {
+                            Image(systemName: viewModel.isCompassCalibrationActive ? "xmark.circle.fill" : "scope")
+                                .font(.system(size: 19, weight: .bold))
+
+                            Text(viewModel.calibrationButtonTitle)
+                                .font(.system(size: 18, weight: .bold, design: .rounded))
+                                .lineLimit(2)
+                        }
+
+                        Text(viewModel.calibrationButtonSubtitle)
+                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                            .foregroundStyle(Color.black.opacity(0.58))
+                            .multilineTextAlignment(.leading)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 26, style: .continuous)
+                            .fill(viewModel.isCompassCalibrationActive ? Color(red: 1.0, green: 0.86, blue: 0.78) : Color.white)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 26, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+                    )
+                    .foregroundStyle(.black)
+                }
+                .buttonStyle(.plain)
+
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(viewModel.calibrationStatusTitle)
+                                .font(.system(size: 16, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+
+                            Text(viewModel.compassCalibrationMessage)
+                                .font(.system(size: 14, weight: .medium, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.7))
+                        }
+
+                        Spacer(minLength: 12)
+
+                        Text(compassOffsetText(viewModel.compassCalibrationOffsetDegrees))
+                            .font(.system(size: 18, weight: .bold, design: .rounded))
+                            .foregroundStyle(Color(red: 0.99, green: 0.70, blue: 0.43))
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("How it works")
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.46))
+
+                        Text("1. Tap Calibrate Compass.\n2. Tap the road on the map.\n3. Pick the arrow that matches your direction.")
+                            .font(.system(size: 14, weight: .medium, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.82))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(18)
+                .background(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                )
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("More controls can still be added here later.")
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.46))
+
+                    HStack(spacing: 12) {
+                        PlaceholderButton(title: "Slot 1")
+                        PlaceholderButton(title: "Slot 2")
+                    }
                 }
 
                 Spacer(minLength: 0)
@@ -332,6 +407,12 @@ struct DashboardPanel: View {
         guard let value else { return "--" }
         let milesPerHour = value * 0.621_371
         return milesPerHour.formatted(.number.precision(.fractionLength(1)))
+    }
+
+    private func compassOffsetText(_ value: Double) -> String {
+        let sign = value >= 0 ? "+" : "-"
+        let magnitude = abs(value).formatted(.number.precision(.fractionLength(1)))
+        return "\(sign)\(magnitude)°"
     }
 }
 

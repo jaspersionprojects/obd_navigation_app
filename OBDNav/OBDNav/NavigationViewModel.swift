@@ -31,6 +31,12 @@ final class NavigationViewModel: ObservableObject {
     @Published private(set) var connectingDongleID: UUID?
     @Published private(set) var connectedDongleID: UUID?
     @Published private(set) var isStationaryByIMU = false
+    @Published private(set) var isCompassCalibrationActive = false
+    @Published private(set) var isResolvingCompassCalibrationRoad = false
+    @Published private(set) var compassCalibrationCandidate: CompassCalibrationCandidate?
+    @Published private(set) var compassCalibrationTapCoordinate: CLLocationCoordinate2D?
+    @Published private(set) var compassCalibrationOffsetDegrees: CLLocationDirection = 0
+    @Published private(set) var compassCalibrationMessage = "Tap a road to calibrate the compass."
 
     let locationService: LocationService
     let obdManager: OBDBLEManager
@@ -38,6 +44,7 @@ final class NavigationViewModel: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
     private var deadReckoningTask: Task<Void, Never>?
+    private var compassCalibrationTask: Task<Void, Never>?
     private var lastTick = Date()
     private let previewMode: Bool
     private var hasStarted = false
@@ -47,6 +54,9 @@ final class NavigationViewModel: ObservableObject {
     private var stationaryDetector = StationaryDetector()
     private var stationaryVelocityHoldActive = false
     private var reportedOBDSpeedKPH: Double?
+    private var rawCompassHeadingDegrees: CLLocationDirection?
+
+    private static let compassCalibrationOffsetDefaultsKey = "CompassCalibrationOffsetDegrees"
 
     static let defaultRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 51.5074, longitude: -0.1278),
@@ -88,6 +98,85 @@ final class NavigationViewModel: ObservableObject {
         }
     }
 
+    var calibrationButtonTitle: String {
+        isCompassCalibrationActive ? "Cancel Calibration" : "Calibrate Compass"
+    }
+
+    var calibrationButtonSubtitle: String {
+        if isResolvingCompassCalibrationRoad {
+            return "Reading the road under your tap"
+        }
+
+        if compassCalibrationCandidate != nil {
+            return "Choose the arrow that matches your direction"
+        }
+
+        if isCompassCalibrationActive {
+            return "Tap the road you are driving on"
+        }
+
+        if abs(compassCalibrationOffsetDegrees) >= 0.1 {
+            return "Saved offset \(formattedCalibrationOffset)"
+        }
+
+        return "No saved offset yet"
+    }
+
+    var calibrationStatusTitle: String {
+        if isResolvingCompassCalibrationRoad {
+            return "Finding Road Direction"
+        }
+
+        if compassCalibrationCandidate != nil {
+            return "Choose Your Direction"
+        }
+
+        if isCompassCalibrationActive {
+            return "Tap The Road On The Map"
+        }
+
+        return "Compass Offset"
+    }
+
+    var calibrationOverlayText: String? {
+        guard isCompassCalibrationActive || compassCalibrationCandidate != nil || isResolvingCompassCalibrationRoad else {
+            return nil
+        }
+
+        return compassCalibrationMessage
+    }
+
+    var calibrationGuideCoordinates: [CLLocationCoordinate2D] {
+        guard
+            let forwardCoordinate = compassCalibrationForwardArrowCoordinate,
+            let reverseCoordinate = compassCalibrationReverseArrowCoordinate
+        else {
+            return []
+        }
+
+        return [reverseCoordinate, forwardCoordinate]
+    }
+
+    var compassCalibrationForwardArrowCoordinate: CLLocationCoordinate2D? {
+        guard let compassCalibrationCandidate else { return nil }
+
+        return DeadReckoning.advance(
+            from: compassCalibrationCandidate.anchorCoordinate,
+            distanceMeters: 16,
+            bearingDegrees: compassCalibrationCandidate.forwardBearingDegrees
+        )
+    }
+
+    var compassCalibrationReverseArrowCoordinate: CLLocationCoordinate2D? {
+        guard let compassCalibrationCandidate else { return nil }
+
+        return DeadReckoning.advance(
+            from: compassCalibrationCandidate.anchorCoordinate,
+            distanceMeters: 16,
+            bearingDegrees: normalizeDegrees(compassCalibrationCandidate.forwardBearingDegrees + 180)
+        )
+    }
+
     convenience init(previewMode: Bool = false) {
         self.init(
             locationService: LocationService(),
@@ -107,6 +196,9 @@ final class NavigationViewModel: ObservableObject {
         self.obdManager = obdManager
         self.motionService = motionService
         self.previewMode = previewMode
+        self.compassCalibrationOffsetDegrees = UserDefaults.standard.double(
+            forKey: Self.compassCalibrationOffsetDefaultsKey
+        )
 
         if previewMode {
             seedPreviewState()
@@ -117,6 +209,7 @@ final class NavigationViewModel: ObservableObject {
 
     deinit {
         deadReckoningTask?.cancel()
+        compassCalibrationTask?.cancel()
     }
 
     func start() {
@@ -153,6 +246,61 @@ final class NavigationViewModel: ObservableObject {
         obdManager.connect(to: dongle)
     }
 
+    func toggleCompassCalibration() {
+        if isCompassCalibrationActive || compassCalibrationCandidate != nil || isResolvingCompassCalibrationRoad {
+            cancelCompassCalibration()
+        } else {
+            beginCompassCalibration()
+        }
+    }
+
+    func handleCompassCalibrationTap(at coordinate: CLLocationCoordinate2D) {
+        guard isCompassCalibrationActive else { return }
+        guard !isResolvingCompassCalibrationRoad else { return }
+        guard compassCalibrationCandidate == nil else { return }
+
+        compassCalibrationTapCoordinate = coordinate
+        compassCalibrationMessage = "Finding road direction..."
+        isResolvingCompassCalibrationRoad = true
+
+        compassCalibrationTask?.cancel()
+        compassCalibrationTask = Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                let candidate = try await RoadAlignmentResolver.resolveRoadAlignment(near: coordinate)
+                guard !Task.isCancelled else { return }
+
+                self.compassCalibrationCandidate = candidate
+                self.compassCalibrationTapCoordinate = candidate.anchorCoordinate
+                self.isResolvingCompassCalibrationRoad = false
+                self.compassCalibrationMessage = "Choose the arrow that matches your direction of travel."
+            } catch {
+                guard !Task.isCancelled else { return }
+
+                self.compassCalibrationCandidate = nil
+                self.isResolvingCompassCalibrationRoad = false
+                self.compassCalibrationMessage = error.localizedDescription.isEmpty
+                    ? "Couldn’t read that road. Tap the road again."
+                    : error.localizedDescription
+            }
+        }
+    }
+
+    func chooseForwardCompassCalibrationDirection() {
+        guard let compassCalibrationCandidate else { return }
+        applyCompassCalibration(
+            targetBearingDegrees: compassCalibrationCandidate.forwardBearingDegrees
+        )
+    }
+
+    func chooseReverseCompassCalibrationDirection() {
+        guard let compassCalibrationCandidate else { return }
+        applyCompassCalibration(
+            targetBearingDegrees: normalizeDegrees(compassCalibrationCandidate.forwardBearingDegrees + 180)
+        )
+    }
+
     private func bind() {
         locationService.$location
             .receive(on: RunLoop.main)
@@ -164,8 +312,7 @@ final class NavigationViewModel: ObservableObject {
         locationService.$compassHeadingDegrees
             .receive(on: RunLoop.main)
             .sink { [weak self] heading in
-                guard let heading else { return }
-                self?.headingDegrees = heading
+                self?.handleRawCompassHeading(heading)
             }
             .store(in: &cancellables)
 
@@ -239,7 +386,7 @@ final class NavigationViewModel: ObservableObject {
         isStationaryByIMU = stationaryDetector.update(
             correctedAccelerationG: sample.correctedAccelerationG,
             correctedRotationRateRadPerSec: sample.correctedRotationRateRadPerSec,
-            currentHeadingDegrees: locationService.compassHeadingDegrees
+            currentHeadingDegrees: calibratedCompassHeadingDegrees
         )
 
         applyEffectiveOBDSpeed()
@@ -311,7 +458,7 @@ final class NavigationViewModel: ObservableObject {
 
         guard delta > 0 else { return }
         guard let speedKPH = obdSpeedKPH, speedKPH > 0.5 else { return }
-        guard let heading = locationService.compassHeadingDegrees else { return }
+        guard let heading = calibratedCompassHeadingDegrees else { return }
         guard let currentCoordinate = obdCoordinate else { return }
 
         let distanceMeters = (speedKPH / 3.6) * delta
@@ -388,6 +535,79 @@ final class NavigationViewModel: ObservableObject {
         )
     }
 
+    private func beginCompassCalibration() {
+        isCompassCalibrationActive = true
+        isResolvingCompassCalibrationRoad = false
+        compassCalibrationCandidate = nil
+        compassCalibrationTapCoordinate = nil
+        compassCalibrationMessage = "Tap the road you are driving on."
+    }
+
+    private func cancelCompassCalibration() {
+        compassCalibrationTask?.cancel()
+        compassCalibrationTask = nil
+        isCompassCalibrationActive = false
+        isResolvingCompassCalibrationRoad = false
+        compassCalibrationCandidate = nil
+        compassCalibrationTapCoordinate = nil
+        compassCalibrationMessage = abs(compassCalibrationOffsetDegrees) >= 0.1
+            ? "Saved offset \(formattedCalibrationOffset)"
+            : "Tap a road to calibrate the compass."
+    }
+
+    private func applyCompassCalibration(targetBearingDegrees: CLLocationDirection) {
+        guard let rawCompassHeadingDegrees else {
+            compassCalibrationMessage = "Heading unavailable. Keep the phone steady and try again."
+            return
+        }
+
+        compassCalibrationOffsetDegrees = signedDeltaDegrees(
+            from: rawCompassHeadingDegrees,
+            to: targetBearingDegrees
+        )
+        UserDefaults.standard.set(
+            compassCalibrationOffsetDegrees,
+            forKey: Self.compassCalibrationOffsetDefaultsKey
+        )
+
+        headingDegrees = normalizeDegrees(rawCompassHeadingDegrees + compassCalibrationOffsetDegrees)
+        isCompassCalibrationActive = false
+        isResolvingCompassCalibrationRoad = false
+        compassCalibrationCandidate = nil
+        compassCalibrationTapCoordinate = nil
+        compassCalibrationMessage = "Compass calibrated with \(formattedCalibrationOffset) applied."
+    }
+
+    private func handleRawCompassHeading(_ heading: CLLocationDirection?) {
+        rawCompassHeadingDegrees = heading
+
+        guard let calibratedCompassHeadingDegrees else { return }
+        headingDegrees = calibratedCompassHeadingDegrees
+    }
+
+    private var calibratedCompassHeadingDegrees: CLLocationDirection? {
+        guard let rawCompassHeadingDegrees else { return nil }
+        return normalizeDegrees(rawCompassHeadingDegrees + compassCalibrationOffsetDegrees)
+    }
+
+    private var formattedCalibrationOffset: String {
+        let sign = compassCalibrationOffsetDegrees >= 0 ? "+" : "-"
+        return "\(sign)\(abs(compassCalibrationOffsetDegrees).formatted(.number.precision(.fractionLength(1))))°"
+    }
+
+    private func normalizeDegrees(_ value: CLLocationDirection) -> CLLocationDirection {
+        let normalized = value.truncatingRemainder(dividingBy: 360)
+        return normalized >= 0 ? normalized : normalized + 360
+    }
+
+    private func signedDeltaDegrees(
+        from source: CLLocationDirection,
+        to target: CLLocationDirection
+    ) -> CLLocationDirection {
+        let delta = normalizeDegrees(target - source)
+        return delta > 180 ? delta - 360 : delta
+    }
+
     private func seedPreviewState() {
         gpsCoordinate = CLLocationCoordinate2D(latitude: 51.50786, longitude: -0.12765)
         obdCoordinate = CLLocationCoordinate2D(latitude: 51.50762, longitude: -0.12688)
@@ -406,11 +626,13 @@ final class NavigationViewModel: ObservableObject {
         gpsSpeedKPH = 5.2
         obdSpeedKPH = 3.8
         reportedOBDSpeedKPH = 3.8
-        headingDegrees = 96
+        compassCalibrationOffsetDegrees = 4.5
+        headingDegrees = 100.5
         gapMeters = 31
         selectedPanelPage = 0
         isPanelExpanded = true
         isStationaryByIMU = false
+        compassCalibrationMessage = "Saved offset +4.5°"
         cameraPosition = .region(
             MKCoordinateRegion(
                 center: CLLocationCoordinate2D(latitude: 51.50755, longitude: -0.1271),
