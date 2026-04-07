@@ -23,6 +23,12 @@ struct RoadLockProjection {
     let segmentFraction: Double
 }
 
+struct RoadLockHeadingReference {
+    let bearingDegrees: CLLocationDirection
+    let maxDeviationDegrees: CLLocationDirection
+    let sampleCount: Int
+}
+
 enum RoadLockMatcher {
     private static let localPathMaximumDistanceMeters = 100.0
     private static let minimumSampleCount = 4
@@ -179,6 +185,73 @@ enum RoadLockMatcher {
             routeCoordinates: routeCoordinates,
             segmentIndex: max(routeCoordinates.count - 2, 0),
             fraction: 1
+        )
+    }
+
+    static func headingReference(
+        on routeCoordinates: [CLLocationCoordinate2D],
+        around projection: RoadLockProjection,
+        windowDistanceMeters: CLLocationDistance
+    ) -> RoadLockHeadingReference? {
+        guard routeCoordinates.count > 1 else { return nil }
+
+        let clampedSegmentIndex = min(max(projection.segmentIndex, 0), routeCoordinates.count - 2)
+        var segmentIndexes = Set<Int>()
+        segmentIndexes.insert(clampedSegmentIndex)
+
+        var backwardDistanceRemaining = windowDistanceMeters
+        var backwardSegmentIndex = clampedSegmentIndex
+        backwardDistanceRemaining -= segmentLength(
+            on: routeCoordinates,
+            at: backwardSegmentIndex
+        ) * projection.segmentFraction
+
+        while backwardDistanceRemaining > 0, backwardSegmentIndex > 0 {
+            backwardSegmentIndex -= 1
+            segmentIndexes.insert(backwardSegmentIndex)
+            backwardDistanceRemaining -= segmentLength(
+                on: routeCoordinates,
+                at: backwardSegmentIndex
+            )
+        }
+
+        var forwardDistanceRemaining = windowDistanceMeters
+        var forwardSegmentIndex = clampedSegmentIndex
+        forwardDistanceRemaining -= segmentLength(
+            on: routeCoordinates,
+            at: forwardSegmentIndex
+        ) * (1 - projection.segmentFraction)
+
+        while forwardDistanceRemaining > 0, forwardSegmentIndex < routeCoordinates.count - 2 {
+            forwardSegmentIndex += 1
+            segmentIndexes.insert(forwardSegmentIndex)
+            forwardDistanceRemaining -= segmentLength(
+                on: routeCoordinates,
+                at: forwardSegmentIndex
+            )
+        }
+
+        let segmentBearings = segmentIndexes
+            .sorted()
+            .map { index in
+                bearingDegrees(
+                    from: routeCoordinates[index],
+                    to: routeCoordinates[index + 1]
+                )
+            }
+
+        guard let meanBearingDegrees = circularMeanDegrees(segmentBearings) else {
+            return nil
+        }
+
+        let maxDeviationDegrees = segmentBearings.reduce(0.0) { partialResult, segmentBearing in
+            max(partialResult, abs(signedDeltaDegrees(from: meanBearingDegrees, to: segmentBearing)))
+        }
+
+        return RoadLockHeadingReference(
+            bearingDegrees: meanBearingDegrees,
+            maxDeviationDegrees: maxDeviationDegrees,
+            sampleCount: segmentBearings.count
         )
     }
 
@@ -608,6 +681,14 @@ enum RoadLockMatcher {
         distanceMeters(from: start, to: end)
     }
 
+    private static func segmentLength(
+        on routeCoordinates: [CLLocationCoordinate2D],
+        at index: Int
+    ) -> CLLocationDistance {
+        guard index >= 0, index < routeCoordinates.count - 1 else { return 0 }
+        return distanceMetersBetween(routeCoordinates[index], routeCoordinates[index + 1])
+    }
+
     private static func bearingDegrees(
         from start: CLLocationCoordinate2D,
         to end: CLLocationCoordinate2D
@@ -628,6 +709,28 @@ enum RoadLockMatcher {
     private static func normalizeDegrees(_ value: CLLocationDirection) -> CLLocationDirection {
         let normalized = value.truncatingRemainder(dividingBy: 360)
         return normalized >= 0 ? normalized : normalized + 360
+    }
+
+    private static func circularMeanDegrees(
+        _ bearings: [CLLocationDirection]
+    ) -> CLLocationDirection? {
+        guard !bearings.isEmpty else { return nil }
+
+        let sum = bearings.reduce(CGPoint.zero) { partialResult, bearing in
+            let radians = bearing * .pi / 180
+            return CGPoint(
+                x: partialResult.x + cos(radians),
+                y: partialResult.y + sin(radians)
+            )
+        }
+
+        guard sum.x != 0 || sum.y != 0 else {
+            guard let firstBearing = bearings.first else { return nil }
+            let normalizedBearing = firstBearing.truncatingRemainder(dividingBy: 360)
+            return normalizedBearing >= 0 ? normalizedBearing : normalizedBearing + 360
+        }
+
+        return normalizeDegrees(atan2(sum.y, sum.x) * 180 / .pi)
     }
 
     private static func signedDeltaDegrees(

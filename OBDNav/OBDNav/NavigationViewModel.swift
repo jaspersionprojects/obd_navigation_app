@@ -69,6 +69,8 @@ final class NavigationViewModel: ObservableObject {
     private var isRoadLockSegmentOpen = false
     private var lastRoadLockRefreshDate = Date.distantPast
     private var lastRoadLockRefreshCoordinate: CLLocationCoordinate2D?
+    private var lastRoadLockSuccessfulMatchDate = Date.distantPast
+    private var roadLockConfidenceStreak = 0
 
     private static let compassCalibrationOffsetDefaultsKey = "CompassCalibrationOffsetDegrees"
     private static let roadLockRefreshInterval: TimeInterval = 0.9
@@ -79,6 +81,16 @@ final class NavigationViewModel: ObservableObject {
     private static let movingCompassCorrectionClampDegrees = 0.35
     private static let stableCompassCorrectionClampDegrees = 1.4
     private static let maximumCompassCorrectionDeltaDegrees = 110.0
+    private static let minimumRoadHeadingCorrectionSpeedKPH = 8.0
+    private static let roadHeadingCorrectionWindowMeters = 28.0
+    private static let maximumRoadHeadingStraightnessDegrees = 12.0
+    private static let minimumRoadHeadingConfidenceStreak = 2
+    private static let roadHeadingCorrectionFreshnessInterval: TimeInterval = 3.0
+    private static let maximumRoadHeadingCorrectionDeltaDegrees = 75.0
+    private static let movingRoadHeadingCorrectionGain = 0.05
+    private static let stableRoadHeadingCorrectionGain = 0.12
+    private static let movingRoadHeadingCorrectionClampDegrees = 0.45
+    private static let stableRoadHeadingCorrectionClampDegrees = 1.1
 
     static let defaultRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 51.5074, longitude: -0.1278),
@@ -830,11 +842,14 @@ final class NavigationViewModel: ObservableObject {
         )
 
         self.fusedSensorHeadingDegrees = normalizeDegrees(fusedSensorHeadingDegrees + boundedCorrectionDegrees)
+        applyRoadHeadingCorrection(using: sample)
     }
 
     private func resetActiveRoadLockRoute() {
         activeRoadLockRouteCoordinates = []
         activeRoadLockProjection = nil
+        lastRoadLockSuccessfulMatchDate = .distantPast
+        roadLockConfidenceStreak = 0
         breakRoadLockSegment()
         lastRoadLockRefreshCoordinate = nil
         lastRoadLockRefreshDate = .distantPast
@@ -889,15 +904,23 @@ final class NavigationViewModel: ObservableObject {
 
             if let match {
                 self.activeRoadLockRouteCoordinates = match.routeCoordinates
+                self.lastRoadLockSuccessfulMatchDate = Date()
+                self.roadLockConfidenceStreak = min(
+                    self.roadLockConfidenceStreak + 1,
+                    Self.minimumRoadHeadingConfidenceStreak + 3
+                )
                 self.applyRoadLockMatch(match)
             } else {
                 if self.roadLockCoordinate != nil,
                    !self.activeRoadLockRouteCoordinates.isEmpty,
                    self.activeRoadLockProjection != nil {
+                    self.roadLockConfidenceStreak = max(self.roadLockConfidenceStreak - 1, 0)
                     self.roadLockStatusMessage = "Holding the last matched road until the next road lock."
                 } else {
                     self.activeRoadLockRouteCoordinates = []
                     self.activeRoadLockProjection = nil
+                    self.lastRoadLockSuccessfulMatchDate = .distantPast
+                    self.roadLockConfidenceStreak = 0
                     self.roadLockCoordinate = nil
                     self.breakRoadLockSegment()
                     self.roadLockStatusMessage = "No strong road fit nearby right now."
@@ -943,6 +966,56 @@ final class NavigationViewModel: ObservableObject {
                 ? "Road lock reached the end of the current road and is waiting."
                 : "Road lock is following the matched road path."
         }
+    }
+
+    private func applyRoadHeadingCorrection(using sample: MotionSample) {
+        guard isRoadLockEnabled else { return }
+        guard roadLockConfidenceStreak >= Self.minimumRoadHeadingConfidenceStreak else { return }
+        guard Date().timeIntervalSince(lastRoadLockSuccessfulMatchDate) <= Self.roadHeadingCorrectionFreshnessInterval else { return }
+        guard let speedKPH = obdSpeedKPH, speedKPH >= Self.minimumRoadHeadingCorrectionSpeedKPH else { return }
+        guard let activeRoadLockProjection else { return }
+        guard !activeRoadLockRouteCoordinates.isEmpty else { return }
+        guard let fusedSensorHeadingDegrees else { return }
+        guard let currentCalibratedHeadingDegrees = calibratedCompassHeadingDegrees else { return }
+
+        let rotationMagnitude = sqrt(
+            sample.correctedRotationRateRadPerSec.x * sample.correctedRotationRateRadPerSec.x +
+            sample.correctedRotationRateRadPerSec.y * sample.correctedRotationRateRadPerSec.y +
+            sample.correctedRotationRateRadPerSec.z * sample.correctedRotationRateRadPerSec.z
+        )
+
+        guard let headingReference = RoadLockMatcher.headingReference(
+            on: activeRoadLockRouteCoordinates,
+            around: activeRoadLockProjection,
+            windowDistanceMeters: Self.roadHeadingCorrectionWindowMeters
+        ) else {
+            return
+        }
+
+        guard headingReference.sampleCount >= 2 else { return }
+        guard headingReference.maxDeviationDegrees <= Self.maximumRoadHeadingStraightnessDegrees else { return }
+
+        let roadHeadingDeltaDegrees = signedDeltaDegrees(
+            from: currentCalibratedHeadingDegrees,
+            to: headingReference.bearingDegrees
+        )
+
+        guard abs(roadHeadingDeltaDegrees) <= Self.maximumRoadHeadingCorrectionDeltaDegrees else {
+            return
+        }
+
+        let isRotationStable = rotationMagnitude <= Self.stableRotationRateThresholdRadPerSec
+        let correctionGain = isRotationStable ? Self.stableRoadHeadingCorrectionGain : Self.movingRoadHeadingCorrectionGain
+        let correctionClampDegrees = isRotationStable
+            ? Self.stableRoadHeadingCorrectionClampDegrees
+            : Self.movingRoadHeadingCorrectionClampDegrees
+
+        let boundedCorrectionDegrees = min(
+            max(roadHeadingDeltaDegrees * correctionGain, -correctionClampDegrees),
+            correctionClampDegrees
+        )
+
+        self.fusedSensorHeadingDegrees = normalizeDegrees(fusedSensorHeadingDegrees + boundedCorrectionDegrees)
     }
 
     private var stabilizedSensorHeadingDegrees: CLLocationDirection? {
