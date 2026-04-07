@@ -62,6 +62,8 @@ final class NavigationViewModel: ObservableObject {
     private var stationaryVelocityHoldActive = false
     private var reportedOBDSpeedKPH: Double?
     private var rawCompassHeadingDegrees: CLLocationDirection?
+    private var fusedSensorHeadingDegrees: CLLocationDirection?
+    private var lastMotionYawRadians: Double?
     private var activeRoadLockRouteCoordinates: [CLLocationCoordinate2D] = []
     private var activeRoadLockProjection: RoadLockProjection?
     private var isRoadLockSegmentOpen = false
@@ -71,6 +73,12 @@ final class NavigationViewModel: ObservableObject {
     private static let compassCalibrationOffsetDefaultsKey = "CompassCalibrationOffsetDegrees"
     private static let roadLockRefreshInterval: TimeInterval = 0.9
     private static let roadLockRefreshDistanceMeters: CLLocationDistance = 10
+    private static let stableRotationRateThresholdRadPerSec = 0.16
+    private static let movingCompassCorrectionGain = 0.02
+    private static let stableCompassCorrectionGain = 0.08
+    private static let movingCompassCorrectionClampDegrees = 0.35
+    private static let stableCompassCorrectionClampDegrees = 1.4
+    private static let maximumCompassCorrectionDeltaDegrees = 110.0
 
     static let defaultRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 51.5074, longitude: -0.1278),
@@ -497,6 +505,8 @@ final class NavigationViewModel: ObservableObject {
     private func handleMotionSample(_ sample: MotionSample?) {
         guard let sample else { return }
 
+        updateFusedHeading(using: sample)
+
         isStationaryByIMU = stationaryDetector.update(
             correctedAccelerationG: sample.correctedAccelerationG,
             correctedRotationRateRadPerSec: sample.correctedRotationRateRadPerSec,
@@ -699,13 +709,13 @@ final class NavigationViewModel: ObservableObject {
     }
 
     private func applyCompassCalibration(targetBearingDegrees: CLLocationDirection) {
-        guard let rawCompassHeadingDegrees else {
+        guard let sensorHeadingDegrees = stabilizedSensorHeadingDegrees else {
             compassCalibrationMessage = "Heading unavailable. Keep the phone steady and try again."
             return
         }
 
         let offsetDegrees = signedDeltaDegrees(
-            from: rawCompassHeadingDegrees,
+            from: sensorHeadingDegrees,
             to: targetBearingDegrees
         )
         applyCompassCalibrationOffset(offsetDegrees, messagePrefix: "Compass calibrated")
@@ -713,6 +723,10 @@ final class NavigationViewModel: ObservableObject {
 
     private func handleRawCompassHeading(_ heading: CLLocationDirection?) {
         rawCompassHeadingDegrees = heading
+
+        if fusedSensorHeadingDegrees == nil {
+            fusedSensorHeadingDegrees = heading
+        }
 
         guard let calibratedCompassHeadingDegrees else { return }
         headingDegrees = calibratedCompassHeadingDegrees
@@ -728,8 +742,8 @@ final class NavigationViewModel: ObservableObject {
             forKey: Self.compassCalibrationOffsetDefaultsKey
         )
 
-        if let rawCompassHeadingDegrees {
-            headingDegrees = normalizeDegrees(rawCompassHeadingDegrees + compassCalibrationOffsetDegrees)
+        if let stabilizedSensorHeadingDegrees {
+            headingDegrees = normalizeDegrees(stabilizedSensorHeadingDegrees + compassCalibrationOffsetDegrees)
         }
 
         isCompassCalibrationActive = false
@@ -757,6 +771,65 @@ final class NavigationViewModel: ObservableObject {
         roadLockCoordinate = nil
         roadLockStatusMessage = "Road lock is off."
         resetActiveRoadLockRoute()
+    }
+
+    private func updateFusedHeading(using sample: MotionSample) {
+        defer {
+            if let calibratedCompassHeadingDegrees {
+                headingDegrees = calibratedCompassHeadingDegrees
+            }
+        }
+
+        let currentYawRadians = sample.yawRadians
+
+        if let previousYawRadians = lastMotionYawRadians {
+            let yawDeltaRadians = normalizedSignedRadians(currentYawRadians - previousYawRadians)
+            let yawDeltaDegrees = -(yawDeltaRadians * 180 / .pi)
+
+            if let fusedSensorHeadingDegrees {
+                self.fusedSensorHeadingDegrees = normalizeDegrees(fusedSensorHeadingDegrees + yawDeltaDegrees)
+            } else if let rawCompassHeadingDegrees {
+                self.fusedSensorHeadingDegrees = normalizeDegrees(rawCompassHeadingDegrees + yawDeltaDegrees)
+            }
+        } else if fusedSensorHeadingDegrees == nil, let rawCompassHeadingDegrees {
+            fusedSensorHeadingDegrees = rawCompassHeadingDegrees
+        }
+
+        lastMotionYawRadians = currentYawRadians
+
+        guard let rawCompassHeadingDegrees,
+              let fusedSensorHeadingDegrees else {
+            return
+        }
+
+        let compassDeltaDegrees = signedDeltaDegrees(
+            from: fusedSensorHeadingDegrees,
+            to: rawCompassHeadingDegrees
+        )
+        let absoluteCompassDeltaDegrees = abs(compassDeltaDegrees)
+
+        guard absoluteCompassDeltaDegrees <= Self.maximumCompassCorrectionDeltaDegrees else {
+            return
+        }
+
+        let rotationMagnitude = sqrt(
+            sample.correctedRotationRateRadPerSec.x * sample.correctedRotationRateRadPerSec.x +
+            sample.correctedRotationRateRadPerSec.y * sample.correctedRotationRateRadPerSec.y +
+            sample.correctedRotationRateRadPerSec.z * sample.correctedRotationRateRadPerSec.z
+        )
+
+        let isRotationStable = rotationMagnitude <= Self.stableRotationRateThresholdRadPerSec
+        let correctionGain = isRotationStable ? Self.stableCompassCorrectionGain : Self.movingCompassCorrectionGain
+        let correctionClampDegrees = isRotationStable
+            ? Self.stableCompassCorrectionClampDegrees
+            : Self.movingCompassCorrectionClampDegrees
+
+        let boundedCorrectionDegrees = min(
+            max(compassDeltaDegrees * correctionGain, -correctionClampDegrees),
+            correctionClampDegrees
+        )
+
+        self.fusedSensorHeadingDegrees = normalizeDegrees(fusedSensorHeadingDegrees + boundedCorrectionDegrees)
     }
 
     private func resetActiveRoadLockRoute() {
@@ -872,9 +945,13 @@ final class NavigationViewModel: ObservableObject {
         }
     }
 
+    private var stabilizedSensorHeadingDegrees: CLLocationDirection? {
+        fusedSensorHeadingDegrees ?? rawCompassHeadingDegrees
+    }
+
     private var calibratedCompassHeadingDegrees: CLLocationDirection? {
-        guard let rawCompassHeadingDegrees else { return nil }
-        return normalizeDegrees(rawCompassHeadingDegrees + compassCalibrationOffsetDegrees)
+        guard let stabilizedSensorHeadingDegrees else { return nil }
+        return normalizeDegrees(stabilizedSensorHeadingDegrees + compassCalibrationOffsetDegrees)
     }
 
     private var formattedCalibrationOffset: String {
@@ -893,6 +970,18 @@ final class NavigationViewModel: ObservableObject {
     ) -> CLLocationDirection {
         let delta = normalizeDegrees(target - source)
         return delta > 180 ? delta - 360 : delta
+    }
+
+    private func normalizedSignedRadians(_ value: Double) -> Double {
+        var normalizedValue = value.truncatingRemainder(dividingBy: 2 * .pi)
+
+        if normalizedValue > .pi {
+            normalizedValue -= 2 * .pi
+        } else if normalizedValue < -.pi {
+            normalizedValue += 2 * .pi
+        }
+
+        return normalizedValue
     }
 
     private func normalizedSignedDegrees(_ value: CLLocationDirection) -> CLLocationDirection {
@@ -918,6 +1007,8 @@ final class NavigationViewModel: ObservableObject {
         gpsSpeedKPH = 5.2
         obdSpeedKPH = 3.8
         reportedOBDSpeedKPH = 3.8
+        rawCompassHeadingDegrees = 96
+        fusedSensorHeadingDegrees = 96
         compassCalibrationOffsetDegrees = 4.5
         headingDegrees = 100.5
         gapMeters = 31

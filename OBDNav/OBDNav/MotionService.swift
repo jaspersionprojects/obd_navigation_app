@@ -13,6 +13,7 @@ import simd
 struct MotionSample {
     let correctedAccelerationG: SIMD3<Double>
     let correctedRotationRateRadPerSec: SIMD3<Double>
+    let yawRadians: Double
 }
 
 @MainActor
@@ -44,7 +45,8 @@ final class MotionService: ObservableObject {
                     motion.rotationRate.x,
                     motion.rotationRate.y,
                     motion.rotationRate.z
-                )
+                ),
+                yawRadians: motion.attitude.yaw
             )
 
             Task { @MainActor in
