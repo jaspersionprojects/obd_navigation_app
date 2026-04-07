@@ -141,7 +141,8 @@ struct ContentView: View {
                     }
                 }
 
-                if let obdCoordinate = viewModel.obdCoordinate {
+                if viewModel.isOBDMarkerVisible,
+                   let obdCoordinate = viewModel.obdCoordinate {
                     Annotation("OBD", coordinate: obdCoordinate, anchor: .center) {
                         MarkerBadge(
                             title: "OBD",

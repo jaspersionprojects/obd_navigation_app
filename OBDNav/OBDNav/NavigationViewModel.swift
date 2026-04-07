@@ -37,6 +37,7 @@ final class NavigationViewModel: ObservableObject {
     @Published private(set) var compassCalibrationTapCoordinate: CLLocationCoordinate2D?
     @Published private(set) var compassCalibrationOffsetDegrees: CLLocationDirection = 0
     @Published private(set) var compassCalibrationMessage = "Tap a road to calibrate the compass."
+    @Published private(set) var isOBDMarkerVisible = true
     @Published private(set) var isRoadLockEnabled = false
     @Published private(set) var isResolvingRoadLock = false
     @Published private(set) var roadLockCoordinate: CLLocationCoordinate2D?
@@ -62,6 +63,7 @@ final class NavigationViewModel: ObservableObject {
     private var reportedOBDSpeedKPH: Double?
     private var rawCompassHeadingDegrees: CLLocationDirection?
     private var activeRoadLockRouteCoordinates: [CLLocationCoordinate2D] = []
+    private var activeRoadLockProjection: RoadLockProjection?
     private var isRoadLockSegmentOpen = false
     private var lastRoadLockRefreshDate = Date.distantPast
     private var lastRoadLockRefreshCoordinate: CLLocationCoordinate2D?
@@ -152,6 +154,14 @@ final class NavigationViewModel: ObservableObject {
 
     var roadLockButtonTitle: String {
         isRoadLockEnabled ? "Road Lock On" : "Road Lock"
+    }
+
+    var obdMarkerButtonTitle: String {
+        isOBDMarkerVisible ? "Hide OBD Marker" : "Show OBD Marker"
+    }
+
+    var obdMarkerButtonSubtitle: String {
+        isOBDMarkerVisible ? "Hide the orange raw OBD marker from the map." : "Show the orange raw OBD marker on the map."
     }
 
     var roadLockButtonSubtitle: String {
@@ -366,6 +376,41 @@ final class NavigationViewModel: ObservableObject {
         )
     }
 
+    func toggleOBDMarkerVisibility() {
+        isOBDMarkerVisible.toggle()
+    }
+
+    func clearAllTrails() {
+        gpsTrailCoordinates = gpsCoordinate.map { [$0] } ?? []
+        obdTrailCoordinates = obdCoordinate.map { [$0] } ?? []
+
+        if let roadLockCoordinate {
+            roadLockTrailSegments = [[roadLockCoordinate]]
+            isRoadLockSegmentOpen = true
+        } else {
+            roadLockTrailSegments = []
+            breakRoadLockSegment()
+        }
+    }
+
+    func applyManualCompassCalibrationOffset(_ input: String) {
+        let normalizedInput = input
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: ".")
+
+        guard !normalizedInput.isEmpty else {
+            compassCalibrationMessage = "Enter a compass offset in degrees first."
+            return
+        }
+
+        guard let parsedOffset = Double(normalizedInput), parsedOffset.isFinite else {
+            compassCalibrationMessage = "Enter a valid positive or negative degree offset."
+            return
+        }
+
+        applyCompassCalibrationOffset(parsedOffset, messagePrefix: "Manual offset")
+    }
+
     private func bind() {
         locationService.$location
             .receive(on: RunLoop.main)
@@ -530,8 +575,7 @@ final class NavigationViewModel: ObservableObject {
         let delta = now.timeIntervalSince(lastTick)
         lastTick = now
 
-        if isRoadLockEnabled, let currentCoordinate = obdCoordinate {
-            updateRoadLockProjection(using: currentCoordinate)
+        if isRoadLockEnabled {
             refreshRoadLockIfNeeded()
         }
 
@@ -549,7 +593,7 @@ final class NavigationViewModel: ObservableObject {
         obdCoordinate = nextCoordinate
         appendCoordinate(nextCoordinate, to: &obdTrailCoordinates)
         if isRoadLockEnabled {
-            updateRoadLockProjection(using: nextCoordinate)
+            advanceRoadLockMarker(by: distanceMeters)
             refreshRoadLockIfNeeded()
         }
         updateGap()
@@ -660,21 +704,11 @@ final class NavigationViewModel: ObservableObject {
             return
         }
 
-        compassCalibrationOffsetDegrees = signedDeltaDegrees(
+        let offsetDegrees = signedDeltaDegrees(
             from: rawCompassHeadingDegrees,
             to: targetBearingDegrees
         )
-        UserDefaults.standard.set(
-            compassCalibrationOffsetDegrees,
-            forKey: Self.compassCalibrationOffsetDefaultsKey
-        )
-
-        headingDegrees = normalizeDegrees(rawCompassHeadingDegrees + compassCalibrationOffsetDegrees)
-        isCompassCalibrationActive = false
-        isResolvingCompassCalibrationRoad = false
-        compassCalibrationCandidate = nil
-        compassCalibrationTapCoordinate = nil
-        compassCalibrationMessage = "Compass calibrated with \(formattedCalibrationOffset) applied."
+        applyCompassCalibrationOffset(offsetDegrees, messagePrefix: "Compass calibrated")
     }
 
     private func handleRawCompassHeading(_ heading: CLLocationDirection?) {
@@ -682,6 +716,27 @@ final class NavigationViewModel: ObservableObject {
 
         guard let calibratedCompassHeadingDegrees else { return }
         headingDegrees = calibratedCompassHeadingDegrees
+    }
+
+    private func applyCompassCalibrationOffset(
+        _ offsetDegrees: CLLocationDirection,
+        messagePrefix: String
+    ) {
+        compassCalibrationOffsetDegrees = normalizedSignedDegrees(offsetDegrees)
+        UserDefaults.standard.set(
+            compassCalibrationOffsetDegrees,
+            forKey: Self.compassCalibrationOffsetDefaultsKey
+        )
+
+        if let rawCompassHeadingDegrees {
+            headingDegrees = normalizeDegrees(rawCompassHeadingDegrees + compassCalibrationOffsetDegrees)
+        }
+
+        isCompassCalibrationActive = false
+        isResolvingCompassCalibrationRoad = false
+        compassCalibrationCandidate = nil
+        compassCalibrationTapCoordinate = nil
+        compassCalibrationMessage = "\(messagePrefix) \(formattedCalibrationOffset) applied."
     }
 
     private func enableRoadLock() {
@@ -706,6 +761,7 @@ final class NavigationViewModel: ObservableObject {
 
     private func resetActiveRoadLockRoute() {
         activeRoadLockRouteCoordinates = []
+        activeRoadLockProjection = nil
         breakRoadLockSegment()
         lastRoadLockRefreshCoordinate = nil
         lastRoadLockRefreshDate = .distantPast
@@ -760,42 +816,59 @@ final class NavigationViewModel: ObservableObject {
 
             if let match {
                 self.activeRoadLockRouteCoordinates = match.routeCoordinates
-                self.roadLockStatusMessage = "Road lock is following the nearest matching road path."
-                self.updateRoadLockProjection(using: currentCoordinate)
+                self.applyRoadLockMatch(match)
             } else {
-                self.activeRoadLockRouteCoordinates = []
-                self.roadLockCoordinate = nil
-                self.breakRoadLockSegment()
-                self.roadLockStatusMessage = "No strong road fit nearby right now."
+                if self.roadLockCoordinate != nil,
+                   !self.activeRoadLockRouteCoordinates.isEmpty,
+                   self.activeRoadLockProjection != nil {
+                    self.roadLockStatusMessage = "Holding the last matched road until the next road lock."
+                } else {
+                    self.activeRoadLockRouteCoordinates = []
+                    self.activeRoadLockProjection = nil
+                    self.roadLockCoordinate = nil
+                    self.breakRoadLockSegment()
+                    self.roadLockStatusMessage = "No strong road fit nearby right now."
+                }
             }
         }
     }
 
-    private func updateRoadLockProjection(using rawCoordinate: CLLocationCoordinate2D) {
-        guard isRoadLockEnabled else { return }
-        guard !activeRoadLockRouteCoordinates.isEmpty else {
-            roadLockCoordinate = nil
-            breakRoadLockSegment()
-            return
-        }
+    private func applyRoadLockMatch(_ match: RoadLockMatch) {
+        activeRoadLockProjection = match.snappedProjection
+        roadLockCoordinate = match.snappedCoordinate
+        appendRoadLockCoordinate(match.snappedCoordinate)
+        roadLockStatusMessage = "Road lock is following the matched road path."
+    }
 
-        guard let projection = RoadLockMatcher.snap(
-            rawCoordinate,
-            to: activeRoadLockRouteCoordinates,
-            currentHeadingDegrees: calibratedCompassHeadingDegrees
+    private func advanceRoadLockMarker(by distanceMeters: CLLocationDistance) {
+        guard isRoadLockEnabled else { return }
+        guard distanceMeters > 0 else { return }
+        guard !activeRoadLockRouteCoordinates.isEmpty else { return }
+        guard let activeRoadLockProjection else { return }
+
+        guard let nextProjection = RoadLockMatcher.advance(
+            activeRoadLockProjection,
+            on: activeRoadLockRouteCoordinates,
+            by: distanceMeters
         ) else {
-            roadLockCoordinate = nil
-            breakRoadLockSegment()
             if !isResolvingRoadLock {
-                roadLockStatusMessage = "Holding for a better nearby road fit."
+                roadLockStatusMessage = "Road lock is waiting for the next nearby road fit."
             }
             return
         }
 
-        roadLockCoordinate = projection.coordinate
-        appendRoadLockCoordinate(projection.coordinate)
+        self.activeRoadLockProjection = nextProjection
+        roadLockCoordinate = nextProjection.coordinate
+        appendRoadLockCoordinate(nextProjection.coordinate)
+
+        let isAtRouteEnd =
+            nextProjection.segmentIndex >= max(activeRoadLockRouteCoordinates.count - 2, 0) &&
+            nextProjection.segmentFraction >= 0.999
+
         if !isResolvingRoadLock {
-            roadLockStatusMessage = "Road lock is following the nearest matching road path."
+            roadLockStatusMessage = isAtRouteEnd
+                ? "Road lock reached the end of the current road and is waiting."
+                : "Road lock is following the matched road path."
         }
     }
 
@@ -820,6 +893,11 @@ final class NavigationViewModel: ObservableObject {
     ) -> CLLocationDirection {
         let delta = normalizeDegrees(target - source)
         return delta > 180 ? delta - 360 : delta
+    }
+
+    private func normalizedSignedDegrees(_ value: CLLocationDirection) -> CLLocationDirection {
+        let normalized = normalizeDegrees(value)
+        return normalized > 180 ? normalized - 360 : normalized
     }
 
     private func seedPreviewState() {

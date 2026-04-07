@@ -14,6 +14,7 @@ struct DashboardPanel: View {
     let expandedHeight: CGFloat
 
     @GestureState private var dragOffset: CGFloat = 0
+    @State private var manualCalibrationOffsetText = ""
 
     var body: some View {
         let baseOffset = viewModel.isPanelExpanded ? 0 : expandedHeight - collapsedHeight
@@ -40,6 +41,12 @@ struct DashboardPanel: View {
         .offset(y: interactiveOffset)
         .shadow(color: Color.black.opacity(0.18), radius: 24, x: 0, y: -8)
         .animation(.spring(response: 0.34, dampingFraction: 0.84), value: viewModel.isPanelExpanded)
+        .onAppear {
+            syncManualCalibrationOffsetText()
+        }
+        .onChange(of: viewModel.compassCalibrationOffsetDegrees) { _, _ in
+            syncManualCalibrationOffsetText()
+        }
     }
 
     private var panelHandle: some View {
@@ -200,6 +207,62 @@ struct DashboardPanel: View {
                 }
                 .buttonStyle(.plain)
 
+                HStack(spacing: 12) {
+                    Button(action: viewModel.toggleOBDMarkerVisibility) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 10) {
+                                Image(systemName: viewModel.isOBDMarkerVisible ? "eye.slash.fill" : "eye.fill")
+                                    .font(.system(size: 18, weight: .bold))
+
+                                Text(viewModel.obdMarkerButtonTitle)
+                                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                                    .lineLimit(2)
+                            }
+
+                            Text(viewModel.obdMarkerButtonSubtitle)
+                                .font(.system(size: 12, weight: .medium, design: .rounded))
+                                .foregroundStyle(Color.black.opacity(0.58))
+                                .multilineTextAlignment(.leading)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 84, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                .fill(Color.white)
+                        )
+                        .foregroundStyle(.black)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button(action: viewModel.clearAllTrails) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 10) {
+                                Image(systemName: "trash.fill")
+                                    .font(.system(size: 18, weight: .bold))
+
+                                Text("Clear All Trails")
+                                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                                    .lineLimit(2)
+                            }
+
+                            Text("Clear the GPS, OBD, and road-lock path history while keeping the live markers.")
+                                .font(.system(size: 12, weight: .medium, design: .rounded))
+                                .foregroundStyle(Color.black.opacity(0.58))
+                                .multilineTextAlignment(.leading)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 84, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                .fill(Color.white)
+                        )
+                        .foregroundStyle(.black)
+                    }
+                    .buttonStyle(.plain)
+                }
+
                 VStack(alignment: .leading, spacing: 14) {
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 6) {
@@ -227,6 +290,49 @@ struct DashboardPanel: View {
                         Text("1. Tap Calibrate Compass.\n2. Tap the road on the map.\n3. Pick the arrow that matches your direction.")
                             .font(.system(size: 14, weight: .medium, design: .rounded))
                             .foregroundStyle(.white.opacity(0.82))
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Manual offset")
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.46))
+
+                        HStack(spacing: 10) {
+                            TextField("e.g. -12.5", text: $manualCalibrationOffsetText)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .keyboardType(.numbersAndPunctuation)
+                                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 14)
+                                .frame(height: 48)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                        .fill(Color.white.opacity(0.08))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                                )
+
+                            Button {
+                                viewModel.applyManualCompassCalibrationOffset(manualCalibrationOffsetText)
+                                manualCalibrationOffsetText = String(
+                                    format: "%.1f",
+                                    viewModel.compassCalibrationOffsetDegrees
+                                )
+                            } label: {
+                                Text("Apply")
+                                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                                    .frame(minWidth: 78, minHeight: 48)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                            .fill(Color(red: 0.99, green: 0.70, blue: 0.43))
+                                    )
+                                    .foregroundStyle(.black)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -455,7 +561,7 @@ struct DashboardPanel: View {
         Circle()
             .fill(index == viewModel.selectedPanelPage ? Color.black.opacity(0.68) : Color.black.opacity(0.18))
             .frame(width: 11, height: 11)
-            .animation(.spring(response: 0.24, dampingFraction: 0.82), value: viewModel.selectedPanelPage)
+        .animation(.spring(response: 0.24, dampingFraction: 0.82), value: viewModel.selectedPanelPage)
     }
 
     private func speedTextInMPH(_ value: Double?) -> String {
@@ -468,6 +574,10 @@ struct DashboardPanel: View {
         let sign = value >= 0 ? "+" : "-"
         let magnitude = abs(value).formatted(.number.precision(.fractionLength(1)))
         return "\(sign)\(magnitude)°"
+    }
+
+    private func syncManualCalibrationOffsetText() {
+        manualCalibrationOffsetText = String(format: "%.1f", viewModel.compassCalibrationOffsetDegrees)
     }
 }
 
