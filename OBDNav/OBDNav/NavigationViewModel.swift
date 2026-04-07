@@ -75,6 +75,9 @@ final class NavigationViewModel: ObservableObject {
     private static let compassCalibrationOffsetDefaultsKey = "CompassCalibrationOffsetDegrees"
     private static let roadLockRefreshInterval: TimeInterval = 0.9
     private static let roadLockRefreshDistanceMeters: CLLocationDistance = 10
+    private static let headingFreezeSpeedKPH = 0.8
+    private static let minimumCompassCorrectionSpeedKPH = 3.0
+    private static let fullCompassCorrectionSpeedKPH = 26.0
     private static let stableRotationRateThresholdRadPerSec = 0.16
     private static let movingCompassCorrectionGain = 0.02
     private static let stableCompassCorrectionGain = 0.08
@@ -82,6 +85,7 @@ final class NavigationViewModel: ObservableObject {
     private static let stableCompassCorrectionClampDegrees = 1.4
     private static let maximumCompassCorrectionDeltaDegrees = 110.0
     private static let minimumRoadHeadingCorrectionSpeedKPH = 8.0
+    private static let fullRoadHeadingCorrectionSpeedKPH = 32.0
     private static let roadHeadingCorrectionWindowMeters = 28.0
     private static let maximumRoadHeadingStraightnessDegrees = 12.0
     private static let minimumRoadHeadingConfidenceStreak = 2
@@ -793,6 +797,15 @@ final class NavigationViewModel: ObservableObject {
         }
 
         let currentYawRadians = sample.yawRadians
+        let headingReferenceSpeedKPH = currentHeadingReferenceSpeedKPH
+
+        if headingReferenceSpeedKPH <= Self.headingFreezeSpeedKPH {
+            if fusedSensorHeadingDegrees == nil, let rawCompassHeadingDegrees {
+                fusedSensorHeadingDegrees = rawCompassHeadingDegrees
+            }
+            lastMotionYawRadians = currentYawRadians
+            return
+        }
 
         if let previousYawRadians = lastMotionYawRadians {
             let yawDeltaRadians = normalizedSignedRadians(currentYawRadians - previousYawRadians)
@@ -830,11 +843,21 @@ final class NavigationViewModel: ObservableObject {
             sample.correctedRotationRateRadPerSec.z * sample.correctedRotationRateRadPerSec.z
         )
 
+        let speedWeight = correctionWeight(
+            for: headingReferenceSpeedKPH,
+            minimumSpeedKPH: Self.minimumCompassCorrectionSpeedKPH,
+            fullSpeedKPH: Self.fullCompassCorrectionSpeedKPH
+        )
+
+        guard speedWeight > 0 else { return }
+
         let isRotationStable = rotationMagnitude <= Self.stableRotationRateThresholdRadPerSec
-        let correctionGain = isRotationStable ? Self.stableCompassCorrectionGain : Self.movingCompassCorrectionGain
-        let correctionClampDegrees = isRotationStable
+        let baseCorrectionGain = isRotationStable ? Self.stableCompassCorrectionGain : Self.movingCompassCorrectionGain
+        let baseCorrectionClampDegrees = isRotationStable
             ? Self.stableCompassCorrectionClampDegrees
             : Self.movingCompassCorrectionClampDegrees
+        let correctionGain = baseCorrectionGain * speedWeight
+        let correctionClampDegrees = baseCorrectionClampDegrees * max(speedWeight, 0.2)
 
         let boundedCorrectionDegrees = min(
             max(compassDeltaDegrees * correctionGain, -correctionClampDegrees),
@@ -972,7 +995,8 @@ final class NavigationViewModel: ObservableObject {
         guard isRoadLockEnabled else { return }
         guard roadLockConfidenceStreak >= Self.minimumRoadHeadingConfidenceStreak else { return }
         guard Date().timeIntervalSince(lastRoadLockSuccessfulMatchDate) <= Self.roadHeadingCorrectionFreshnessInterval else { return }
-        guard let speedKPH = obdSpeedKPH, speedKPH >= Self.minimumRoadHeadingCorrectionSpeedKPH else { return }
+        let speedKPH = currentHeadingReferenceSpeedKPH
+        guard speedKPH >= Self.minimumRoadHeadingCorrectionSpeedKPH else { return }
         guard let activeRoadLockProjection else { return }
         guard !activeRoadLockRouteCoordinates.isEmpty else { return }
         guard let fusedSensorHeadingDegrees else { return }
@@ -1004,11 +1028,21 @@ final class NavigationViewModel: ObservableObject {
             return
         }
 
+        let speedWeight = correctionWeight(
+            for: speedKPH,
+            minimumSpeedKPH: Self.minimumRoadHeadingCorrectionSpeedKPH,
+            fullSpeedKPH: Self.fullRoadHeadingCorrectionSpeedKPH
+        )
+
+        guard speedWeight > 0 else { return }
+
         let isRotationStable = rotationMagnitude <= Self.stableRotationRateThresholdRadPerSec
-        let correctionGain = isRotationStable ? Self.stableRoadHeadingCorrectionGain : Self.movingRoadHeadingCorrectionGain
-        let correctionClampDegrees = isRotationStable
+        let baseCorrectionGain = isRotationStable ? Self.stableRoadHeadingCorrectionGain : Self.movingRoadHeadingCorrectionGain
+        let baseCorrectionClampDegrees = isRotationStable
             ? Self.stableRoadHeadingCorrectionClampDegrees
             : Self.movingRoadHeadingCorrectionClampDegrees
+        let correctionGain = baseCorrectionGain * speedWeight
+        let correctionClampDegrees = baseCorrectionClampDegrees * max(speedWeight, 0.25)
 
         let boundedCorrectionDegrees = min(
             max(roadHeadingDeltaDegrees * correctionGain, -correctionClampDegrees),
@@ -1020,6 +1054,10 @@ final class NavigationViewModel: ObservableObject {
 
     private var stabilizedSensorHeadingDegrees: CLLocationDirection? {
         fusedSensorHeadingDegrees ?? rawCompassHeadingDegrees
+    }
+
+    private var currentHeadingReferenceSpeedKPH: Double {
+        max(obdSpeedKPH ?? 0, 0)
     }
 
     private var calibratedCompassHeadingDegrees: CLLocationDirection? {
@@ -1055,6 +1093,20 @@ final class NavigationViewModel: ObservableObject {
         }
 
         return normalizedValue
+    }
+
+    private func correctionWeight(
+        for speedKPH: Double,
+        minimumSpeedKPH: Double,
+        fullSpeedKPH: Double
+    ) -> Double {
+        guard fullSpeedKPH > minimumSpeedKPH else {
+            return speedKPH >= fullSpeedKPH ? 1 : 0
+        }
+
+        let normalizedValue = (speedKPH - minimumSpeedKPH) / (fullSpeedKPH - minimumSpeedKPH)
+        let clampedValue = min(max(normalizedValue, 0), 1)
+        return clampedValue * clampedValue * (3 - 2 * clampedValue)
     }
 
     private func normalizedSignedDegrees(_ value: CLLocationDirection) -> CLLocationDirection {
