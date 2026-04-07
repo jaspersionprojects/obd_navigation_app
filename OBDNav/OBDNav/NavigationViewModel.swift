@@ -435,6 +435,13 @@ final class NavigationViewModel: ObservableObject {
         applyCompassCalibrationOffset(parsedOffset, messagePrefix: "Manual offset")
     }
 
+    func nudgeCompassCalibrationOffset(by deltaDegrees: CLLocationDirection) {
+        applyCompassCalibrationOffset(
+            compassCalibrationOffsetDegrees + deltaDegrees,
+            messagePrefix: "Compass offset"
+        )
+    }
+
     private func bind() {
         locationService.$location
             .receive(on: RunLoop.main)

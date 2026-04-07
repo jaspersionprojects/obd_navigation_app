@@ -71,6 +71,12 @@ struct DashboardPanel: View {
                 systemImage: "slider.horizontal.3",
                 index: 1
             )
+
+            selectorButton(
+                title: "Nudge",
+                systemImage: "plusminus.circle",
+                index: 2
+            )
         }
         .contentShape(Rectangle())
         .gesture(verticalDragGesture)
@@ -83,6 +89,9 @@ struct DashboardPanel: View {
 
             futureControlsPage
                 .tag(1)
+
+            nudgeControlsPage
+                .tag(2)
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
         .frame(maxHeight: .infinity, alignment: .top)
@@ -392,6 +401,65 @@ struct DashboardPanel: View {
         )
     }
 
+    private var nudgeControlsPage: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Compass Nudge")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+
+                Text("Fine-tune the saved compass offset with small steps while watching the OBD marker settle on the road.")
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.74))
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Current Offset")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.46))
+
+                    Text(compassOffsetText(viewModel.compassCalibrationOffsetDegrees))
+                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color(red: 0.99, green: 0.70, blue: 0.43))
+
+                    Text("Try larger moves first, then finish with ±1° nudges.")
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.78))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(18)
+                .background(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                )
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    nudgeButton(title: "-10°", deltaDegrees: -10)
+                    nudgeButton(title: "-5°", deltaDegrees: -5)
+                    nudgeButton(title: "-1°", deltaDegrees: -1)
+                    nudgeButton(title: "+1°", deltaDegrees: 1)
+                    nudgeButton(title: "+5°", deltaDegrees: 5)
+                    nudgeButton(title: "+10°", deltaDegrees: 10)
+                }
+
+                Text("Each tap updates the saved offset immediately and keeps the map calibration in sync.")
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.68))
+
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(20)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .fill(Color.black.opacity(0.96))
+        )
+    }
+
     private var connectButton: some View {
         Button(action: viewModel.showOBDDevicePicker) {
             VStack(alignment: .leading, spacing: 10) {
@@ -490,6 +558,7 @@ struct DashboardPanel: View {
         HStack(spacing: 8) {
             pageDot(index: 0)
             pageDot(index: 1)
+            pageDot(index: 2)
         }
     }
 
@@ -574,6 +643,26 @@ struct DashboardPanel: View {
         let sign = value >= 0 ? "+" : "-"
         let magnitude = abs(value).formatted(.number.precision(.fractionLength(1)))
         return "\(sign)\(magnitude)°"
+    }
+
+    private func nudgeButton(title: String, deltaDegrees: Double) -> some View {
+        Button {
+            viewModel.nudgeCompassCalibrationOffset(by: deltaDegrees)
+        } label: {
+            Text(title)
+                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .frame(maxWidth: .infinity, minHeight: 72)
+                .background(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(Color.white.opacity(0.08))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                )
+                .foregroundStyle(.white)
+        }
+        .buttonStyle(.plain)
     }
 
     private func syncManualCalibrationOffsetText() {
