@@ -73,8 +73,8 @@ struct DashboardPanel: View {
             )
 
             selectorButton(
-                title: "Nudge",
-                systemImage: "plusminus.circle",
+                title: "Sensor",
+                systemImage: "gyroscope",
                 index: 2
             )
         }
@@ -133,6 +133,11 @@ struct DashboardPanel: View {
                 HStack(alignment: .top, spacing: 12) {
                     connectButton
                     connectionStatusCard
+                }
+
+                HStack(alignment: .top, spacing: 12) {
+                    sensorConnectButton
+                    sensorConnectionStatusCard
                 }
 
                 snapButton
@@ -404,13 +409,79 @@ struct DashboardPanel: View {
     private var nudgeControlsPage: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 18) {
-                Text("Compass Nudge")
+                Text("Sensor")
                     .font(.system(size: 28, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
 
-                Text("Fine-tune the saved compass offset with small steps while watching the OBD marker settle on the road.")
+                Text("Connect the external BLE IMU sensor here, then enable it to replace the iPhone compass and motion sensors.")
                     .font(.system(size: 15, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.74))
+
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Sensor Status")
+                                .font(.system(size: 16, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+
+                            Text(viewModel.sensorStatusText)
+                                .font(.system(size: 14, weight: .medium, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.72))
+                        }
+
+                        Spacer(minLength: 12)
+
+                        Circle()
+                            .fill(viewModel.sensorStatusTint)
+                            .frame(width: 14, height: 14)
+                            .padding(.top, 4)
+                    }
+
+                    Text(viewModel.sensorConnectButtonSubtitle)
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.82))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(18)
+                .background(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                )
+
+                Button(action: viewModel.toggleExternalSensorUsage) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 10) {
+                            Image(systemName: viewModel.isExternalSensorEnabled ? "sensor.tag.radiowaves.forward.fill" : "sensor.tag.radiowaves.forward")
+                                .font(.system(size: 19, weight: .bold))
+
+                            Text(viewModel.sensorEnableButtonTitle)
+                                .font(.system(size: 18, weight: .bold, design: .rounded))
+                                .lineLimit(2)
+                        }
+
+                        Text(viewModel.sensorEnableButtonSubtitle)
+                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                            .foregroundStyle(Color.black.opacity(0.58))
+                            .multilineTextAlignment(.leading)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 26, style: .continuous)
+                            .fill(viewModel.isExternalSensorEnabled ? Color(red: 0.79, green: 0.93, blue: 0.85) : Color.white)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 26, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+                    )
+                    .foregroundStyle(.black)
+                }
+                .buttonStyle(.plain)
 
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Current Offset")
@@ -507,6 +578,72 @@ struct DashboardPanel: View {
             }
 
             Text(viewModel.obdStatusText)
+                .font(.system(size: 16, weight: .bold, design: .rounded))
+                .foregroundStyle(.black)
+                .lineLimit(2)
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, minHeight: 84, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .fill(Color.white.opacity(0.5))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private var sensorConnectButton: some View {
+        Button(action: viewModel.showSensorPicker) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "gyroscope")
+                        .font(.system(size: 16, weight: .semibold))
+
+                    Text("Connect to sensor")
+                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                        .lineLimit(2)
+                }
+
+                Text(viewModel.sensorConnectButtonSubtitle)
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(Color.black.opacity(0.48))
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, minHeight: 84, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .fill(Color.white.opacity(0.55))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .strokeBorder(Color(red: 0.53, green: 0.73, blue: 0.95), lineWidth: 1.5)
+            )
+            .foregroundStyle(.black)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var sensorConnectionStatusCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(viewModel.sensorStatusTint)
+                    .frame(width: 12, height: 12)
+
+                Text("Sensor Status")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.black.opacity(0.42))
+            }
+
+            Text(viewModel.sensorStatusText)
                 .font(.system(size: 16, weight: .bold, design: .rounded))
                 .foregroundStyle(.black)
                 .lineLimit(2)

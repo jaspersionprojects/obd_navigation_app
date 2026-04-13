@@ -57,5 +57,6 @@ final class MotionService: ObservableObject {
 
     func stop() {
         motionManager.stopDeviceMotionUpdates()
+        latestSample = nil
     }
 }

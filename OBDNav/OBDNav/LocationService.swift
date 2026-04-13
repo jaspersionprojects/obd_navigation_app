@@ -16,6 +16,7 @@ final class LocationService: NSObject, ObservableObject {
     @Published private(set) var compassHeadingDegrees: CLLocationDirection?
 
     private let manager = CLLocationManager()
+    private var isHeadingUpdatesEnabled = true
 
     override init() {
         super.init()
@@ -39,9 +40,22 @@ final class LocationService: NSObject, ObservableObject {
         }
 
         manager.startUpdatingLocation()
+        updateHeadingSubscription()
+    }
 
-        if CLLocationManager.headingAvailable() {
+    func setHeadingUpdatesEnabled(_ enabled: Bool) {
+        isHeadingUpdatesEnabled = enabled
+        updateHeadingSubscription()
+    }
+
+    private func updateHeadingSubscription() {
+        guard CLLocationManager.headingAvailable() else { return }
+
+        if isHeadingUpdatesEnabled {
             manager.startUpdatingHeading()
+        } else {
+            manager.stopUpdatingHeading()
+            compassHeadingDegrees = nil
         }
     }
 }
@@ -52,10 +66,7 @@ extension LocationService: CLLocationManagerDelegate {
 
         if authorizationStatus == .authorizedWhenInUse || authorizationStatus == .authorizedAlways {
             manager.startUpdatingLocation()
-
-            if CLLocationManager.headingAvailable() {
-                manager.startUpdatingHeading()
-            }
+            updateHeadingSubscription()
         }
     }
 

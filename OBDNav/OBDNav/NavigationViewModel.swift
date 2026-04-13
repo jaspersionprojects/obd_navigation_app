@@ -23,6 +23,7 @@ final class NavigationViewModel: ObservableObject {
     @Published var selectedPanelPage = 0
     @Published var isPanelExpanded = false
     @Published var isShowingDevicePicker = false
+    @Published var isShowingSensorPicker = false
     @Published var cameraPosition: MapCameraPosition = .region(NavigationViewModel.defaultRegion)
 
     @Published private(set) var obdConnectionState: OBDConnectionState = .idle
@@ -30,6 +31,12 @@ final class NavigationViewModel: ObservableObject {
     @Published private(set) var discoveredDongles: [OBDDongle] = []
     @Published private(set) var connectingDongleID: UUID?
     @Published private(set) var connectedDongleID: UUID?
+    @Published private(set) var sensorConnectionState: WitMotionSensorConnectionState = .idle
+    @Published private(set) var isDiscoveringSensors = false
+    @Published private(set) var discoveredSensors: [WitMotionDevice] = []
+    @Published private(set) var connectingSensorID: UUID?
+    @Published private(set) var connectedSensorID: UUID?
+    @Published private(set) var isExternalSensorEnabled = false
     @Published private(set) var isStationaryByIMU = false
     @Published private(set) var isCompassCalibrationActive = false
     @Published private(set) var isResolvingCompassCalibrationRoad = false
@@ -47,6 +54,7 @@ final class NavigationViewModel: ObservableObject {
     let locationService: LocationService
     let obdManager: OBDBLEManager
     let motionService: MotionService
+    let sensorManager: WitMotionBLEManager
 
     private var cancellables = Set<AnyCancellable>()
     private var deadReckoningTask: Task<Void, Never>?
@@ -63,6 +71,7 @@ final class NavigationViewModel: ObservableObject {
     private var reportedOBDSpeedKPH: Double?
     private var rawCompassHeadingDegrees: CLLocationDirection?
     private var fusedSensorHeadingDegrees: CLLocationDirection?
+    private var externalSensorHeadingDegrees: CLLocationDirection?
     private var lastMotionYawRadians: Double?
     private var activeRoadLockRouteCoordinates: [CLLocationCoordinate2D] = []
     private var activeRoadLockProjection: RoadLockProjection?
@@ -134,6 +143,49 @@ final class NavigationViewModel: ObservableObject {
         case .idle:
             return isDiscoveringDongles ? "Looking for nearby BLE OBD dongles" : "Choose a nearby BLE OBD dongle"
         }
+    }
+
+    var sensorStatusText: String {
+        if isDiscoveringSensors, case .idle = sensorConnectionState {
+            return "Scanning for nearby sensors"
+        }
+
+        return sensorConnectionState.displayText
+    }
+
+    var sensorStatusTint: Color {
+        sensorConnectionState.tint
+    }
+
+    var sensorConnectButtonSubtitle: String {
+        switch sensorConnectionState {
+        case .connected(let name):
+            return "Currently connected to \(name)"
+        case .connecting(let name):
+            return "Connecting to \(name)"
+        case .bluetoothOff:
+            return "Turn Bluetooth on to discover sensors"
+        case .failed(let message):
+            return message
+        case .idle:
+            return isDiscoveringSensors ? "Looking for nearby WITMotion BLE sensors" : "Choose your nearby BLE IMU sensor"
+        }
+    }
+
+    var sensorEnableButtonTitle: String {
+        isExternalSensorEnabled ? "Sensor Enabled" : "Enable Sensor"
+    }
+
+    var sensorEnableButtonSubtitle: String {
+        if isExternalSensorEnabled {
+            return "Heading and IMU data now come from the BLE sensor only."
+        }
+
+        if case .connected(let name) = sensorConnectionState {
+            return "Use \(name) instead of the iPhone compass and gyro."
+        }
+
+        return "Connect the BLE sensor first, then enable it here."
     }
 
     var calibrationButtonTitle: String {
@@ -268,6 +320,7 @@ final class NavigationViewModel: ObservableObject {
             locationService: LocationService(),
             obdManager: OBDBLEManager(),
             motionService: MotionService(),
+            sensorManager: WitMotionBLEManager(),
             previewMode: previewMode
         )
     }
@@ -276,11 +329,13 @@ final class NavigationViewModel: ObservableObject {
         locationService: LocationService,
         obdManager: OBDBLEManager,
         motionService: MotionService,
+        sensorManager: WitMotionBLEManager,
         previewMode: Bool = false
     ) {
         self.locationService = locationService
         self.obdManager = obdManager
         self.motionService = motionService
+        self.sensorManager = sensorManager
         self.previewMode = previewMode
         self.compassCalibrationOffsetDegrees = UserDefaults.standard.double(
             forKey: Self.compassCalibrationOffsetDefaultsKey
@@ -305,6 +360,7 @@ final class NavigationViewModel: ObservableObject {
         locationService.start()
         obdManager.start()
         motionService.start()
+        sensorManager.start()
         startDeadReckoningLoop()
     }
 
@@ -324,8 +380,17 @@ final class NavigationViewModel: ObservableObject {
         obdManager.beginDiscovery()
     }
 
+    func showSensorPicker() {
+        isShowingSensorPicker = true
+        sensorManager.beginDiscovery()
+    }
+
     func beginDongleDiscovery() {
         obdManager.beginDiscovery()
+    }
+
+    func beginSensorDiscovery() {
+        sensorManager.beginDiscovery()
     }
 
     func didDismissDevicePicker() {
@@ -333,8 +398,25 @@ final class NavigationViewModel: ObservableObject {
         obdManager.stopDiscovery()
     }
 
+    func didDismissSensorPicker() {
+        isShowingSensorPicker = false
+        sensorManager.stopDiscovery()
+    }
+
     func selectOBDDongle(_ dongle: OBDDongle) {
         obdManager.connect(to: dongle)
+    }
+
+    func selectSensor(_ sensor: WitMotionDevice) {
+        sensorManager.connect(to: sensor)
+    }
+
+    func toggleExternalSensorUsage() {
+        if isExternalSensorEnabled {
+            disableExternalSensorUsage()
+        } else {
+            enableExternalSensorUsage()
+        }
     }
 
     func toggleRoadLock() {
@@ -500,6 +582,46 @@ final class NavigationViewModel: ObservableObject {
         obdManager.$connectedDeviceID
             .receive(on: RunLoop.main)
             .assign(to: &$connectedDongleID)
+
+        sensorManager.$latestSample
+            .receive(on: RunLoop.main)
+            .sink { [weak self] sample in
+                self?.handleExternalSensorSample(sample)
+            }
+            .store(in: &cancellables)
+
+        sensorManager.$connectionState
+            .receive(on: RunLoop.main)
+            .sink { [weak self] state in
+                guard let self else { return }
+
+                self.sensorConnectionState = state
+
+                if case .connected = state {
+                    self.isShowingSensorPicker = false
+                } else if self.isExternalSensorEnabled {
+                    self.externalSensorHeadingDegrees = nil
+                    self.resetStationaryTrackingState()
+                    self.headingDegrees = self.calibratedCompassHeadingDegrees ?? self.headingDegrees
+                }
+            }
+            .store(in: &cancellables)
+
+        sensorManager.$isDiscoveringDevices
+            .receive(on: RunLoop.main)
+            .assign(to: &$isDiscoveringSensors)
+
+        sensorManager.$discoveredDevices
+            .receive(on: RunLoop.main)
+            .assign(to: &$discoveredSensors)
+
+        sensorManager.$connectingDeviceID
+            .receive(on: RunLoop.main)
+            .assign(to: &$connectingSensorID)
+
+        sensorManager.$connectedDeviceID
+            .receive(on: RunLoop.main)
+            .assign(to: &$connectedSensorID)
     }
 
     private func handleGPSLocation(_ location: CLLocation?) {
@@ -526,9 +648,29 @@ final class NavigationViewModel: ObservableObject {
     }
 
     private func handleMotionSample(_ sample: MotionSample?) {
+        guard !isExternalSensorEnabled else { return }
         guard let sample else { return }
 
         updateFusedHeading(using: sample)
+
+        isStationaryByIMU = stationaryDetector.update(
+            correctedAccelerationG: sample.correctedAccelerationG,
+            correctedRotationRateRadPerSec: sample.correctedRotationRateRadPerSec,
+            currentHeadingDegrees: calibratedCompassHeadingDegrees
+        )
+
+        applyEffectiveOBDSpeed()
+    }
+
+    private func handleExternalSensorSample(_ sample: WitMotionSample?) {
+        guard isExternalSensorEnabled else { return }
+        guard let sample else { return }
+
+        externalSensorHeadingDegrees = sample.yawDegrees
+
+        if let calibratedCompassHeadingDegrees {
+            headingDegrees = calibratedCompassHeadingDegrees
+        }
 
         isStationaryByIMU = stationaryDetector.update(
             correctedAccelerationG: sample.correctedAccelerationG,
@@ -573,6 +715,13 @@ final class NavigationViewModel: ObservableObject {
         stationaryVelocityHoldActive = false
         obdSpeedKPH = reportedOBDSpeedKPH
         updateGap()
+    }
+
+    private func resetStationaryTrackingState() {
+        stationaryDetector.reset()
+        isStationaryByIMU = false
+        stationaryVelocityHoldActive = false
+        applyEffectiveOBDSpeed()
     }
 
     private func resetStationaryState() {
@@ -745,6 +894,7 @@ final class NavigationViewModel: ObservableObject {
     }
 
     private func handleRawCompassHeading(_ heading: CLLocationDirection?) {
+        guard !isExternalSensorEnabled else { return }
         rawCompassHeadingDegrees = heading
 
         if fusedSensorHeadingDegrees == nil {
@@ -774,6 +924,38 @@ final class NavigationViewModel: ObservableObject {
         compassCalibrationCandidate = nil
         compassCalibrationTapCoordinate = nil
         compassCalibrationMessage = "\(messagePrefix) \(formattedCalibrationOffset) applied."
+    }
+
+    private func enableExternalSensorUsage() {
+        guard case .connected = sensorConnectionState else {
+            compassCalibrationMessage = "Connect the BLE sensor first."
+            return
+        }
+
+        isExternalSensorEnabled = true
+        rawCompassHeadingDegrees = nil
+        fusedSensorHeadingDegrees = nil
+        lastMotionYawRadians = nil
+        locationService.setHeadingUpdatesEnabled(false)
+        motionService.stop()
+        resetStationaryTrackingState()
+
+        if let latestSample = sensorManager.latestSample {
+            handleExternalSensorSample(latestSample)
+        } else {
+            headingDegrees = calibratedCompassHeadingDegrees ?? headingDegrees
+        }
+    }
+
+    private func disableExternalSensorUsage() {
+        isExternalSensorEnabled = false
+        externalSensorHeadingDegrees = nil
+        rawCompassHeadingDegrees = nil
+        fusedSensorHeadingDegrees = nil
+        lastMotionYawRadians = nil
+        resetStationaryTrackingState()
+        locationService.setHeadingUpdatesEnabled(true)
+        motionService.start()
     }
 
     private func enableRoadLock() {
@@ -999,6 +1181,7 @@ final class NavigationViewModel: ObservableObject {
     }
 
     private func applyRoadHeadingCorrection(using sample: MotionSample) {
+        guard !isExternalSensorEnabled else { return }
         guard isRoadLockEnabled else { return }
         guard roadLockConfidenceStreak >= Self.minimumRoadHeadingConfidenceStreak else { return }
         guard Date().timeIntervalSince(lastRoadLockSuccessfulMatchDate) <= Self.roadHeadingCorrectionFreshnessInterval else { return }
@@ -1060,7 +1243,11 @@ final class NavigationViewModel: ObservableObject {
     }
 
     private var stabilizedSensorHeadingDegrees: CLLocationDirection? {
-        fusedSensorHeadingDegrees ?? rawCompassHeadingDegrees
+        if isExternalSensorEnabled {
+            return externalSensorHeadingDegrees
+        }
+
+        return fusedSensorHeadingDegrees ?? rawCompassHeadingDegrees
     }
 
     private var currentHeadingReferenceSpeedKPH: Double {

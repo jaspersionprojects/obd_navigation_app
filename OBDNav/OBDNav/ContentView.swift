@@ -38,6 +38,9 @@ struct ContentView: View {
         .sheet(isPresented: $viewModel.isShowingDevicePicker, onDismiss: viewModel.didDismissDevicePicker) {
             OBDDonglePickerSheet(viewModel: viewModel)
         }
+        .sheet(isPresented: $viewModel.isShowingSensorPicker, onDismiss: viewModel.didDismissSensorPicker) {
+            WitMotionSensorPickerSheet(viewModel: viewModel)
+        }
         .task {
             viewModel.start()
         }
