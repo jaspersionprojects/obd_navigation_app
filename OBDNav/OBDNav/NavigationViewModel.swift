@@ -44,6 +44,7 @@ final class NavigationViewModel: ObservableObject {
     @Published private(set) var compassCalibrationTapCoordinate: CLLocationCoordinate2D?
     @Published private(set) var compassCalibrationOffsetDegrees: CLLocationDirection = 0
     @Published private(set) var compassCalibrationMessage = "Tap a road to calibrate the compass."
+    @Published private(set) var transientBannerText: String?
     @Published private(set) var isOBDMarkerVisible = true
     @Published private(set) var isRoadLockEnabled = false
     @Published private(set) var isResolvingRoadLock = false
@@ -60,6 +61,7 @@ final class NavigationViewModel: ObservableObject {
     private var deadReckoningTask: Task<Void, Never>?
     private var compassCalibrationTask: Task<Void, Never>?
     private var roadLockTask: Task<Void, Never>?
+    private var transientBannerTask: Task<Void, Never>?
     private var lastTick = Date()
     private let previewMode: Bool
     private var hasStarted = false
@@ -82,6 +84,8 @@ final class NavigationViewModel: ObservableObject {
     private var lastRoadLockRefreshCoordinate: CLLocationCoordinate2D?
     private var lastRoadLockSuccessfulMatchDate = Date.distantPast
     private var roadLockConfidenceStreak = 0
+    private var lastRoadHeadingNotificationDate = Date.distantPast
+    private var lastRoadHeadingNotificationDegrees: CLLocationDirection?
 
     private static let compassCalibrationOffsetDefaultsKey = "CompassCalibrationOffsetDegrees"
     private static let roadLockRefreshInterval: TimeInterval = 0.9
@@ -106,6 +110,10 @@ final class NavigationViewModel: ObservableObject {
     private static let stableRoadHeadingCorrectionGain = 0.12
     private static let movingRoadHeadingCorrectionClampDegrees = 0.45
     private static let stableRoadHeadingCorrectionClampDegrees = 1.1
+    private static let roadHeadingNotificationMinimumDeltaDegrees = 2.0
+    private static let roadHeadingNotificationChangeThresholdDegrees = 3.0
+    private static let roadHeadingNotificationCooldown: TimeInterval = 3.0
+    private static let transientBannerDuration: TimeInterval = 2.4
 
     static let defaultRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 51.5074, longitude: -0.1278),
@@ -279,6 +287,10 @@ final class NavigationViewModel: ObservableObject {
     }
 
     var calibrationOverlayText: String? {
+        if let transientBannerText {
+            return transientBannerText
+        }
+
         guard isCompassCalibrationActive || compassCalibrationCandidate != nil || isResolvingCompassCalibrationRoad else {
             return nil
         }
@@ -1065,11 +1077,8 @@ final class NavigationViewModel: ObservableObject {
         self.fusedSensorHeadingDegrees = normalizeDegrees(fusedSensorHeadingDegrees + boundedCorrectionDegrees)
         applyRoadHeadingCorrection(
             rotationMagnitude: rotationMagnitude,
-            currentCalibratedHeadingDegrees: calibratedCompassHeadingDegrees,
-            fusedHeadingDegrees: self.fusedSensorHeadingDegrees
-        ) { [weak self] correctedHeading in
-            self?.fusedSensorHeadingDegrees = correctedHeading
-        }
+            currentCalibratedHeadingDegrees: calibratedCompassHeadingDegrees
+        )
     }
 
     private func updateExternalFusedHeading(using sample: WitMotionSample) {
@@ -1149,11 +1158,8 @@ final class NavigationViewModel: ObservableObject {
         self.externalFusedSensorHeadingDegrees = normalizeDegrees(externalFusedSensorHeadingDegrees + boundedCorrectionDegrees)
         applyRoadHeadingCorrection(
             rotationMagnitude: rotationMagnitude,
-            currentCalibratedHeadingDegrees: calibratedCompassHeadingDegrees,
-            fusedHeadingDegrees: self.externalFusedSensorHeadingDegrees
-        ) { [weak self] correctedHeading in
-            self?.externalFusedSensorHeadingDegrees = correctedHeading
-        }
+            currentCalibratedHeadingDegrees: calibratedCompassHeadingDegrees
+        )
     }
 
     private func resetActiveRoadLockRoute() {
@@ -1281,9 +1287,7 @@ final class NavigationViewModel: ObservableObject {
 
     private func applyRoadHeadingCorrection(
         rotationMagnitude: Double,
-        currentCalibratedHeadingDegrees: CLLocationDirection?,
-        fusedHeadingDegrees: CLLocationDirection?,
-        updateHeading: (CLLocationDirection) -> Void
+        currentCalibratedHeadingDegrees: CLLocationDirection?
     ) {
         guard isRoadLockEnabled else { return }
         guard roadLockConfidenceStreak >= Self.minimumRoadHeadingConfidenceStreak else { return }
@@ -1292,7 +1296,6 @@ final class NavigationViewModel: ObservableObject {
         guard speedKPH >= Self.minimumRoadHeadingCorrectionSpeedKPH else { return }
         guard let activeRoadLockProjection else { return }
         guard !activeRoadLockRouteCoordinates.isEmpty else { return }
-        guard let fusedHeadingDegrees else { return }
         guard let currentCalibratedHeadingDegrees else { return }
 
         guard let headingReference = RoadLockMatcher.headingReference(
@@ -1336,7 +1339,23 @@ final class NavigationViewModel: ObservableObject {
             correctionClampDegrees
         )
 
-        updateHeading(normalizeDegrees(fusedHeadingDegrees + boundedCorrectionDegrees))
+        let updatedOffsetDegrees = normalizedSignedDegrees(
+            compassCalibrationOffsetDegrees + boundedCorrectionDegrees
+        )
+
+        guard abs(updatedOffsetDegrees - compassCalibrationOffsetDegrees) >= 0.05 else { return }
+
+        compassCalibrationOffsetDegrees = updatedOffsetDegrees
+        UserDefaults.standard.set(
+            compassCalibrationOffsetDegrees,
+            forKey: Self.compassCalibrationOffsetDefaultsKey
+        )
+
+        if let stabilizedSensorHeadingDegrees {
+            headingDegrees = normalizeDegrees(stabilizedSensorHeadingDegrees + compassCalibrationOffsetDegrees)
+        }
+
+        maybeShowRoadLockRecalibrationBanner(forSavedOffset: updatedOffsetDegrees)
     }
 
     private var stabilizedSensorHeadingDegrees: CLLocationDirection? {
@@ -1357,8 +1376,49 @@ final class NavigationViewModel: ObservableObject {
     }
 
     private var formattedCalibrationOffset: String {
-        let sign = compassCalibrationOffsetDegrees >= 0 ? "+" : "-"
-        return "\(sign)\(abs(compassCalibrationOffsetDegrees).formatted(.number.precision(.fractionLength(1))))°"
+        formattedSignedDegrees(compassCalibrationOffsetDegrees)
+    }
+
+    private func formattedSignedDegrees(_ degrees: CLLocationDirection) -> String {
+        let sign = degrees >= 0 ? "+" : "-"
+        return "\(sign)\(abs(degrees).formatted(.number.precision(.fractionLength(1))))°"
+    }
+
+    private func maybeShowRoadLockRecalibrationBanner(forSavedOffset savedOffsetDegrees: CLLocationDirection) {
+        let normalizedOffset = normalizedSignedDegrees(savedOffsetDegrees)
+        guard abs(normalizedOffset) >= Self.roadHeadingNotificationMinimumDeltaDegrees else { return }
+
+        let now = Date()
+        let deltaChangedEnough: Bool
+        if let lastRoadHeadingNotificationDegrees {
+            deltaChangedEnough =
+                abs(signedDeltaDegrees(from: lastRoadHeadingNotificationDegrees, to: normalizedOffset))
+                >= Self.roadHeadingNotificationChangeThresholdDegrees
+        } else {
+            deltaChangedEnough = true
+        }
+
+        guard
+            deltaChangedEnough || now.timeIntervalSince(lastRoadHeadingNotificationDate) >= Self.roadHeadingNotificationCooldown
+        else {
+            return
+        }
+
+        lastRoadHeadingNotificationDate = now
+        lastRoadHeadingNotificationDegrees = normalizedOffset
+        showTransientBanner("Road lock just recalibrated compass to \(formattedSignedDegrees(normalizedOffset))")
+    }
+
+    private func showTransientBanner(_ text: String) {
+        transientBannerTask?.cancel()
+        transientBannerText = text
+        transientBannerTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.transientBannerDuration))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.transientBannerText = nil
+            }
+        }
     }
 
     private func normalizeDegrees(_ value: CLLocationDirection) -> CLLocationDirection {
