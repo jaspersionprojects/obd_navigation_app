@@ -320,7 +320,8 @@ final class WitMotionBLEManager: NSObject, ObservableObject {
         let gyDegreesPerSecond = decodeSigned(packet[10], packet[11]) / 32768.0 * 2000.0
         let gzDegreesPerSecond = decodeSigned(packet[12], packet[13]) / 32768.0 * 2000.0
 
-        let yawDegrees = normalizeDegrees(decodeSigned(packet[18], packet[19]) / 32768.0 * 180.0)
+        let rawYawDegrees = normalizeDegrees(decodeSigned(packet[18], packet[19]) / 32768.0 * 180.0)
+        let headingDegrees = normalizeDegrees(360 - rawYawDegrees)
 
         return WitMotionSample(
             correctedAccelerationG: SIMD3<Double>(ax, ay, az),
@@ -329,7 +330,7 @@ final class WitMotionBLEManager: NSObject, ObservableObject {
                 gyDegreesPerSecond * .pi / 180,
                 gzDegreesPerSecond * .pi / 180
             ),
-            yawDegrees: yawDegrees
+            yawDegrees: headingDegrees
         )
     }
 
