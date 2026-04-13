@@ -72,7 +72,9 @@ final class NavigationViewModel: ObservableObject {
     private var rawCompassHeadingDegrees: CLLocationDirection?
     private var fusedSensorHeadingDegrees: CLLocationDirection?
     private var externalSensorHeadingDegrees: CLLocationDirection?
+    private var externalFusedSensorHeadingDegrees: CLLocationDirection?
     private var lastMotionYawRadians: Double?
+    private var lastExternalSensorSampleDate: Date?
     private var activeRoadLockRouteCoordinates: [CLLocationCoordinate2D] = []
     private var activeRoadLockProjection: RoadLockProjection?
     private var isRoadLockSegmentOpen = false
@@ -599,10 +601,11 @@ final class NavigationViewModel: ObservableObject {
 
                 if case .connected = state {
                     self.isShowingSensorPicker = false
+                    if !self.isExternalSensorEnabled {
+                        self.enableExternalSensorUsage()
+                    }
                 } else if self.isExternalSensorEnabled {
-                    self.externalSensorHeadingDegrees = nil
-                    self.resetStationaryTrackingState()
-                    self.headingDegrees = self.calibratedCompassHeadingDegrees ?? self.headingDegrees
+                    self.disableExternalSensorUsage()
                 }
             }
             .store(in: &cancellables)
@@ -667,6 +670,8 @@ final class NavigationViewModel: ObservableObject {
         guard let sample else { return }
 
         externalSensorHeadingDegrees = sample.yawDegrees
+
+        updateExternalFusedHeading(using: sample)
 
         if let calibratedCompassHeadingDegrees {
             headingDegrees = calibratedCompassHeadingDegrees
@@ -936,6 +941,8 @@ final class NavigationViewModel: ObservableObject {
         rawCompassHeadingDegrees = nil
         fusedSensorHeadingDegrees = nil
         lastMotionYawRadians = nil
+        externalFusedSensorHeadingDegrees = nil
+        lastExternalSensorSampleDate = nil
         locationService.setHeadingUpdatesEnabled(false)
         motionService.stop()
         resetStationaryTrackingState()
@@ -950,6 +957,8 @@ final class NavigationViewModel: ObservableObject {
     private func disableExternalSensorUsage() {
         isExternalSensorEnabled = false
         externalSensorHeadingDegrees = nil
+        externalFusedSensorHeadingDegrees = nil
+        lastExternalSensorSampleDate = nil
         rawCompassHeadingDegrees = nil
         fusedSensorHeadingDegrees = nil
         lastMotionYawRadians = nil
@@ -1054,7 +1063,97 @@ final class NavigationViewModel: ObservableObject {
         )
 
         self.fusedSensorHeadingDegrees = normalizeDegrees(fusedSensorHeadingDegrees + boundedCorrectionDegrees)
-        applyRoadHeadingCorrection(using: sample)
+        applyRoadHeadingCorrection(
+            rotationMagnitude: rotationMagnitude,
+            currentCalibratedHeadingDegrees: calibratedCompassHeadingDegrees,
+            fusedHeadingDegrees: self.fusedSensorHeadingDegrees
+        ) { [weak self] correctedHeading in
+            self?.fusedSensorHeadingDegrees = correctedHeading
+        }
+    }
+
+    private func updateExternalFusedHeading(using sample: WitMotionSample) {
+        defer {
+            if let calibratedCompassHeadingDegrees {
+                headingDegrees = calibratedCompassHeadingDegrees
+            }
+        }
+
+        let rawHeadingDegrees = sample.yawDegrees
+        let headingReferenceSpeedKPH = currentHeadingReferenceSpeedKPH
+
+        if headingReferenceSpeedKPH <= Self.headingFreezeSpeedKPH {
+            if externalFusedSensorHeadingDegrees == nil {
+                externalFusedSensorHeadingDegrees = rawHeadingDegrees
+            }
+            lastExternalSensorSampleDate = sample.timestamp
+            return
+        }
+
+        if let lastExternalSensorSampleDate {
+            let deltaTime = sample.timestamp.timeIntervalSince(lastExternalSensorSampleDate)
+            if deltaTime > 0 {
+                let yawDeltaDegrees = -(sample.correctedRotationRateRadPerSec.z * deltaTime * 180 / .pi)
+
+                if let externalFusedSensorHeadingDegrees {
+                    self.externalFusedSensorHeadingDegrees = normalizeDegrees(externalFusedSensorHeadingDegrees + yawDeltaDegrees)
+                } else {
+                    self.externalFusedSensorHeadingDegrees = normalizeDegrees(rawHeadingDegrees + yawDeltaDegrees)
+                }
+            }
+        } else if externalFusedSensorHeadingDegrees == nil {
+            externalFusedSensorHeadingDegrees = rawHeadingDegrees
+        }
+
+        lastExternalSensorSampleDate = sample.timestamp
+
+        guard let externalFusedSensorHeadingDegrees else { return }
+
+        let headingDeltaDegrees = signedDeltaDegrees(
+            from: externalFusedSensorHeadingDegrees,
+            to: rawHeadingDegrees
+        )
+        let absoluteHeadingDeltaDegrees = abs(headingDeltaDegrees)
+
+        guard absoluteHeadingDeltaDegrees <= Self.maximumCompassCorrectionDeltaDegrees else {
+            return
+        }
+
+        let rotationMagnitude = sqrt(
+            sample.correctedRotationRateRadPerSec.x * sample.correctedRotationRateRadPerSec.x +
+            sample.correctedRotationRateRadPerSec.y * sample.correctedRotationRateRadPerSec.y +
+            sample.correctedRotationRateRadPerSec.z * sample.correctedRotationRateRadPerSec.z
+        )
+
+        let speedWeight = correctionWeight(
+            for: headingReferenceSpeedKPH,
+            minimumSpeedKPH: Self.minimumCompassCorrectionSpeedKPH,
+            fullSpeedKPH: Self.fullCompassCorrectionSpeedKPH
+        )
+
+        guard speedWeight > 0 else { return }
+
+        let isRotationStable = rotationMagnitude <= Self.stableRotationRateThresholdRadPerSec
+        let baseCorrectionGain = isRotationStable ? Self.stableCompassCorrectionGain : Self.movingCompassCorrectionGain
+        let baseCorrectionClampDegrees = isRotationStable
+            ? Self.stableCompassCorrectionClampDegrees
+            : Self.movingCompassCorrectionClampDegrees
+        let correctionGain = baseCorrectionGain * speedWeight
+        let correctionClampDegrees = baseCorrectionClampDegrees * max(speedWeight, 0.2)
+
+        let boundedCorrectionDegrees = min(
+            max(headingDeltaDegrees * correctionGain, -correctionClampDegrees),
+            correctionClampDegrees
+        )
+
+        self.externalFusedSensorHeadingDegrees = normalizeDegrees(externalFusedSensorHeadingDegrees + boundedCorrectionDegrees)
+        applyRoadHeadingCorrection(
+            rotationMagnitude: rotationMagnitude,
+            currentCalibratedHeadingDegrees: calibratedCompassHeadingDegrees,
+            fusedHeadingDegrees: self.externalFusedSensorHeadingDegrees
+        ) { [weak self] correctedHeading in
+            self?.externalFusedSensorHeadingDegrees = correctedHeading
+        }
     }
 
     private func resetActiveRoadLockRoute() {
@@ -1180,8 +1279,12 @@ final class NavigationViewModel: ObservableObject {
         }
     }
 
-    private func applyRoadHeadingCorrection(using sample: MotionSample) {
-        guard !isExternalSensorEnabled else { return }
+    private func applyRoadHeadingCorrection(
+        rotationMagnitude: Double,
+        currentCalibratedHeadingDegrees: CLLocationDirection?,
+        fusedHeadingDegrees: CLLocationDirection?,
+        updateHeading: (CLLocationDirection) -> Void
+    ) {
         guard isRoadLockEnabled else { return }
         guard roadLockConfidenceStreak >= Self.minimumRoadHeadingConfidenceStreak else { return }
         guard Date().timeIntervalSince(lastRoadLockSuccessfulMatchDate) <= Self.roadHeadingCorrectionFreshnessInterval else { return }
@@ -1189,14 +1292,8 @@ final class NavigationViewModel: ObservableObject {
         guard speedKPH >= Self.minimumRoadHeadingCorrectionSpeedKPH else { return }
         guard let activeRoadLockProjection else { return }
         guard !activeRoadLockRouteCoordinates.isEmpty else { return }
-        guard let fusedSensorHeadingDegrees else { return }
-        guard let currentCalibratedHeadingDegrees = calibratedCompassHeadingDegrees else { return }
-
-        let rotationMagnitude = sqrt(
-            sample.correctedRotationRateRadPerSec.x * sample.correctedRotationRateRadPerSec.x +
-            sample.correctedRotationRateRadPerSec.y * sample.correctedRotationRateRadPerSec.y +
-            sample.correctedRotationRateRadPerSec.z * sample.correctedRotationRateRadPerSec.z
-        )
+        guard let fusedHeadingDegrees else { return }
+        guard let currentCalibratedHeadingDegrees else { return }
 
         guard let headingReference = RoadLockMatcher.headingReference(
             on: activeRoadLockRouteCoordinates,
@@ -1239,12 +1336,12 @@ final class NavigationViewModel: ObservableObject {
             correctionClampDegrees
         )
 
-        self.fusedSensorHeadingDegrees = normalizeDegrees(fusedSensorHeadingDegrees + boundedCorrectionDegrees)
+        updateHeading(normalizeDegrees(fusedHeadingDegrees + boundedCorrectionDegrees))
     }
 
     private var stabilizedSensorHeadingDegrees: CLLocationDirection? {
         if isExternalSensorEnabled {
-            return externalSensorHeadingDegrees
+            return externalFusedSensorHeadingDegrees ?? externalSensorHeadingDegrees
         }
 
         return fusedSensorHeadingDegrees ?? rawCompassHeadingDegrees

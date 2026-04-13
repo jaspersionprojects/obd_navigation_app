@@ -67,6 +67,7 @@ struct WitMotionSample {
     let correctedAccelerationG: SIMD3<Double>
     let correctedRotationRateRadPerSec: SIMD3<Double>
     let yawDegrees: CLLocationDirection
+    let timestamp: Date
 }
 
 @MainActor
@@ -330,7 +331,8 @@ final class WitMotionBLEManager: NSObject, ObservableObject {
                 gyDegreesPerSecond * .pi / 180,
                 gzDegreesPerSecond * .pi / 180
             ),
-            yawDegrees: headingDegrees
+            yawDegrees: headingDegrees,
+            timestamp: Date()
         )
     }
 
