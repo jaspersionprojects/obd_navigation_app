@@ -39,6 +39,8 @@ enum RoadLockMatcher {
     private static let shapeTurnWeight = 1.4
     private static let headingPenaltyWeight = 0.08
     private static let routeExtensionDistanceMeters = 90.0
+    private static let minimumSuccessfulRouteExtensionDistanceMeters = 18.0
+    private static let maximumExtensionInitialBearingDeltaDegrees = 28.0
     private static let shapeSampleCount = 12
 
     static func match(
@@ -186,6 +188,51 @@ enum RoadLockMatcher {
             segmentIndex: max(routeCoordinates.count - 2, 0),
             fraction: 1
         )
+    }
+
+    static func remainingDistance(
+        from projection: RoadLockProjection,
+        on routeCoordinates: [CLLocationCoordinate2D]
+    ) -> CLLocationDistance {
+        guard routeCoordinates.count > 1 else { return 0 }
+
+        let clampedSegmentIndex = min(max(projection.segmentIndex, 0), routeCoordinates.count - 2)
+        let currentSegmentDistance =
+            segmentLength(on: routeCoordinates, at: clampedSegmentIndex) *
+            max(0, 1 - min(max(projection.segmentFraction, 0), 1))
+
+        guard clampedSegmentIndex < routeCoordinates.count - 2 else {
+            return currentSegmentDistance
+        }
+
+        let remainingTailDistance = ((clampedSegmentIndex + 1)..<(routeCoordinates.count - 1)).reduce(0.0) { partialResult, index in
+            partialResult + segmentLength(on: routeCoordinates, at: index)
+        }
+
+        return currentSegmentDistance + remainingTailDistance
+    }
+
+    static func extendForward(
+        on routeCoordinates: [CLLocationCoordinate2D]
+    ) async -> [CLLocationCoordinate2D]? {
+        guard routeCoordinates.count > 1 else { return nil }
+
+        let currentDistance = totalDistance(of: routeCoordinates)
+        let currentBearingDegrees = bearingDegrees(
+            from: routeCoordinates[routeCoordinates.count - 2],
+            to: routeCoordinates[routeCoordinates.count - 1]
+        )
+        let extendedRouteCoordinates = await extendRouteForward(
+            routeCoordinates: routeCoordinates,
+            currentBearingDegrees: currentBearingDegrees
+        )
+
+        let extendedDistance = totalDistance(of: extendedRouteCoordinates)
+        guard extendedDistance - currentDistance >= minimumSuccessfulRouteExtensionDistanceMeters else {
+            return nil
+        }
+
+        return extendedRouteCoordinates
     }
 
     static func headingReference(
@@ -532,6 +579,18 @@ enum RoadLockMatcher {
             guard let firstExtensionCoordinate = extensionCoordinates.first,
                   distanceMetersBetween(routeEnd, firstExtensionCoordinate) <= 12
             else {
+                return routeCoordinates
+            }
+
+            let extensionBearingDegrees = bearingDegrees(
+                from: extensionCoordinates[0],
+                to: extensionCoordinates[1]
+            )
+            let extensionBearingDeltaDegrees = abs(signedDeltaDegrees(
+                from: currentBearingDegrees,
+                to: extensionBearingDegrees
+            ))
+            guard extensionBearingDeltaDegrees <= maximumExtensionInitialBearingDeltaDegrees else {
                 return routeCoordinates
             }
 

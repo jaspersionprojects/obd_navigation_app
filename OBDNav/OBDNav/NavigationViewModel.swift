@@ -61,6 +61,7 @@ final class NavigationViewModel: ObservableObject {
     private var deadReckoningTask: Task<Void, Never>?
     private var compassCalibrationTask: Task<Void, Never>?
     private var roadLockTask: Task<Void, Never>?
+    private var roadLockRouteExtensionTask: Task<Void, Never>?
     private var transientBannerTask: Task<Void, Never>?
     private var lastTick = Date()
     private let previewMode: Bool
@@ -84,12 +85,16 @@ final class NavigationViewModel: ObservableObject {
     private var lastRoadLockRefreshCoordinate: CLLocationCoordinate2D?
     private var lastRoadLockSuccessfulMatchDate = Date.distantPast
     private var roadLockConfidenceStreak = 0
+    private var activeRoadLockRouteVersion = 0
+    private var lastRoadLockRouteExtensionAttemptDate = Date.distantPast
     private var lastRoadHeadingNotificationDate = Date.distantPast
     private var lastRoadHeadingNotificationDegrees: CLLocationDirection?
 
     private static let compassCalibrationOffsetDefaultsKey = "CompassCalibrationOffsetDegrees"
     private static let roadLockRefreshInterval: TimeInterval = 0.9
     private static let roadLockRefreshDistanceMeters: CLLocationDistance = 10
+    private static let roadLockRouteExtensionTriggerDistanceMeters: CLLocationDistance = 45
+    private static let roadLockRouteExtensionCooldown: TimeInterval = 1.25
     private static let headingFreezeSpeedKPH = 0.8
     private static let minimumCompassCorrectionSpeedKPH = 3.0
     private static let fullCompassCorrectionSpeedKPH = 26.0
@@ -366,6 +371,7 @@ final class NavigationViewModel: ObservableObject {
         deadReckoningTask?.cancel()
         compassCalibrationTask?.cancel()
         roadLockTask?.cancel()
+        roadLockRouteExtensionTask?.cancel()
     }
 
     func start() {
@@ -992,6 +998,8 @@ final class NavigationViewModel: ObservableObject {
     private func disableRoadLock() {
         roadLockTask?.cancel()
         roadLockTask = nil
+        roadLockRouteExtensionTask?.cancel()
+        roadLockRouteExtensionTask = nil
         isRoadLockEnabled = false
         isResolvingRoadLock = false
         roadLockCoordinate = nil
@@ -1163,8 +1171,12 @@ final class NavigationViewModel: ObservableObject {
     }
 
     private func resetActiveRoadLockRoute() {
+        roadLockRouteExtensionTask?.cancel()
+        roadLockRouteExtensionTask = nil
         activeRoadLockRouteCoordinates = []
         activeRoadLockProjection = nil
+        activeRoadLockRouteVersion += 1
+        lastRoadLockRouteExtensionAttemptDate = .distantPast
         lastRoadLockSuccessfulMatchDate = .distantPast
         roadLockConfidenceStreak = 0
         breakRoadLockSegment()
@@ -1220,7 +1232,11 @@ final class NavigationViewModel: ObservableObject {
             guard self.isRoadLockEnabled else { return }
 
             if let match {
+                self.roadLockRouteExtensionTask?.cancel()
+                self.roadLockRouteExtensionTask = nil
                 self.activeRoadLockRouteCoordinates = match.routeCoordinates
+                self.activeRoadLockRouteVersion += 1
+                self.lastRoadLockRouteExtensionAttemptDate = .distantPast
                 self.lastRoadLockSuccessfulMatchDate = Date()
                 self.roadLockConfidenceStreak = min(
                     self.roadLockConfidenceStreak + 1,
@@ -1234,8 +1250,12 @@ final class NavigationViewModel: ObservableObject {
                     self.roadLockConfidenceStreak = max(self.roadLockConfidenceStreak - 1, 0)
                     self.roadLockStatusMessage = "Holding the last matched road until the next road lock."
                 } else {
+                    self.roadLockRouteExtensionTask?.cancel()
+                    self.roadLockRouteExtensionTask = nil
                     self.activeRoadLockRouteCoordinates = []
                     self.activeRoadLockProjection = nil
+                    self.activeRoadLockRouteVersion += 1
+                    self.lastRoadLockRouteExtensionAttemptDate = .distantPast
                     self.lastRoadLockSuccessfulMatchDate = .distantPast
                     self.roadLockConfidenceStreak = 0
                     self.roadLockCoordinate = nil
@@ -1251,6 +1271,7 @@ final class NavigationViewModel: ObservableObject {
         roadLockCoordinate = match.snappedCoordinate
         appendRoadLockCoordinate(match.snappedCoordinate)
         roadLockStatusMessage = "Road lock is following the matched road path."
+        scheduleRoadLockRouteExtensionIfNeeded()
     }
 
     private func advanceRoadLockMarker(by distanceMeters: CLLocationDistance) {
@@ -1258,6 +1279,8 @@ final class NavigationViewModel: ObservableObject {
         guard distanceMeters > 0 else { return }
         guard !activeRoadLockRouteCoordinates.isEmpty else { return }
         guard let activeRoadLockProjection else { return }
+
+        scheduleRoadLockRouteExtensionIfNeeded()
 
         guard let nextProjection = RoadLockMatcher.advance(
             activeRoadLockProjection,
@@ -1273,6 +1296,7 @@ final class NavigationViewModel: ObservableObject {
         self.activeRoadLockProjection = nextProjection
         roadLockCoordinate = nextProjection.coordinate
         appendRoadLockCoordinate(nextProjection.coordinate)
+        scheduleRoadLockRouteExtensionIfNeeded()
 
         let isAtRouteEnd =
             nextProjection.segmentIndex >= max(activeRoadLockRouteCoordinates.count - 2, 0) &&
@@ -1282,6 +1306,47 @@ final class NavigationViewModel: ObservableObject {
             roadLockStatusMessage = isAtRouteEnd
                 ? "Road lock reached the end of the current road and is waiting."
                 : "Road lock is following the matched road path."
+        }
+    }
+
+    private func scheduleRoadLockRouteExtensionIfNeeded() {
+        guard isRoadLockEnabled else { return }
+        guard roadLockRouteExtensionTask == nil else { return }
+        guard !isResolvingRoadLock else { return }
+        guard !activeRoadLockRouteCoordinates.isEmpty else { return }
+        guard let activeRoadLockProjection else { return }
+
+        let remainingDistance = RoadLockMatcher.remainingDistance(
+            from: activeRoadLockProjection,
+            on: activeRoadLockRouteCoordinates
+        )
+        guard remainingDistance <= Self.roadLockRouteExtensionTriggerDistanceMeters else { return }
+        guard Date().timeIntervalSince(lastRoadLockRouteExtensionAttemptDate) >= Self.roadLockRouteExtensionCooldown else {
+            return
+        }
+
+        let routeCoordinates = activeRoadLockRouteCoordinates
+        let routeVersion = activeRoadLockRouteVersion
+        lastRoadLockRouteExtensionAttemptDate = Date()
+
+        roadLockRouteExtensionTask = Task { [weak self] in
+            guard let self else { return }
+
+            let extendedRouteCoordinates = await RoadLockMatcher.extendForward(on: routeCoordinates)
+
+            guard !Task.isCancelled else { return }
+            self.roadLockRouteExtensionTask = nil
+
+            guard self.isRoadLockEnabled else { return }
+            guard routeVersion == self.activeRoadLockRouteVersion else { return }
+            guard let extendedRouteCoordinates else { return }
+
+            self.activeRoadLockRouteCoordinates = extendedRouteCoordinates
+            self.activeRoadLockRouteVersion += 1
+
+            if !self.isResolvingRoadLock {
+                self.roadLockStatusMessage = "Road lock is following the matched road path."
+            }
         }
     }
 
