@@ -77,6 +77,12 @@ struct DashboardPanel: View {
                 systemImage: "gyroscope",
                 index: 2
             )
+
+            selectorButton(
+                title: "Test",
+                systemImage: "checklist",
+                index: 3
+            )
         }
         .contentShape(Rectangle())
         .gesture(verticalDragGesture)
@@ -92,6 +98,9 @@ struct DashboardPanel: View {
 
             nudgeControlsPage
                 .tag(2)
+
+            testPage
+                .tag(3)
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
         .frame(maxHeight: .infinity, alignment: .top)
@@ -531,6 +540,87 @@ struct DashboardPanel: View {
         )
     }
 
+    private var testPage: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Test")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+
+                Text("Start a timed validation run. Every 20 seconds the app logs GPS distance travelled, GPS vs raw OBD gap, GPS vs road-lock gap, and whether GPS and road lock appear to be on the same road.")
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.74))
+
+                Button(action: viewModel.toggleTestSession) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 10) {
+                            Image(systemName: viewModel.isTestRecording ? "stop.fill" : "play.fill")
+                                .font(.system(size: 19, weight: .bold))
+
+                            Text(viewModel.testButtonTitle)
+                                .font(.system(size: 18, weight: .bold, design: .rounded))
+                                .lineLimit(2)
+                        }
+
+                        Text(viewModel.testButtonSubtitle)
+                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                            .foregroundStyle(Color.black.opacity(0.58))
+                            .multilineTextAlignment(.leading)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 26, style: .continuous)
+                            .fill(viewModel.isTestRecording ? Color(red: 1.0, green: 0.82, blue: 0.82) : Color.white)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 26, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+                    )
+                    .foregroundStyle(.black)
+                }
+                .buttonStyle(.plain)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Status")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.46))
+
+                    Text(viewModel.testStatusMessage)
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+
+                    Text("Samples logged: \(viewModel.testSampleCount)")
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.74))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(18)
+                .background(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                )
+
+                Text("Stopping the run opens a CSV save sheet immediately.")
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.68))
+
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(20)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .fill(Color.black.opacity(0.96))
+        )
+    }
+
     private var connectButton: some View {
         Button(action: viewModel.showOBDDevicePicker) {
             VStack(alignment: .leading, spacing: 10) {
@@ -696,6 +786,7 @@ struct DashboardPanel: View {
             pageDot(index: 0)
             pageDot(index: 1)
             pageDot(index: 2)
+            pageDot(index: 3)
         }
     }
 
@@ -743,10 +834,10 @@ struct DashboardPanel: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
 
                 Text(title)
-                    .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, minHeight: 56)

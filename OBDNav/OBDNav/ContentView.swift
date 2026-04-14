@@ -7,6 +7,7 @@
 
 import MapKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 struct ContentView: View {
@@ -26,6 +27,7 @@ struct ContentView: View {
                 mapLayer
                 calibrationBanner(topInset: proxy.safeAreaInsets.top)
                 statusCapsule(topInset: proxy.safeAreaInsets.top)
+                offsetLockButton(topInset: proxy.safeAreaInsets.top)
                 DashboardPanel(
                     viewModel: viewModel,
                     collapsedHeight: 176,
@@ -40,6 +42,21 @@ struct ContentView: View {
         }
         .sheet(isPresented: $viewModel.isShowingSensorPicker, onDismiss: viewModel.didDismissSensorPicker) {
             WitMotionSensorPickerSheet(viewModel: viewModel)
+        }
+        .fileExporter(
+            isPresented: Binding(
+                get: { viewModel.isShowingTestExport },
+                set: { isPresented in
+                    if !isPresented {
+                        viewModel.dismissTestExport()
+                    }
+                }
+            ),
+            document: CSVExportDocument(csvText: viewModel.pendingTestCSV),
+            contentType: .commaSeparatedText,
+            defaultFilename: viewModel.pendingTestExportFilename
+        ) { result in
+            viewModel.handleTestExportCompletion(result)
         }
         .task {
             viewModel.start()
@@ -237,6 +254,41 @@ struct ContentView: View {
         .padding(.horizontal, 36)
         .allowsHitTesting(false)
     }
+
+    private func offsetLockButton(topInset: CGFloat) -> some View {
+        VStack {
+            HStack {
+                Spacer()
+
+                Button(action: viewModel.toggleCompassOffsetLock) {
+                    HStack(spacing: 8) {
+                        Image(systemName: viewModel.compassOffsetLockButtonSystemImage)
+                            .font(.system(size: 14, weight: .bold))
+
+                        Text(viewModel.compassOffsetLockButtonTitle)
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 11)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(
+                                viewModel.isCompassOffsetLocked
+                                    ? Color(red: 0.15, green: 0.54, blue: 0.31).opacity(0.94)
+                                    : Color.black.opacity(0.86)
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.top, topInset + 74)
+            .padding(.trailing, 20)
+
+            Spacer()
+        }
+    }
 }
 
 struct ContentView_Previews: PreviewProvider {
@@ -265,6 +317,29 @@ private struct CalibrationDirectionArrow: View {
                 .foregroundStyle(tint)
                 .rotationEffect(.degrees(bearingDegrees))
         }
+    }
+}
+
+private struct CSVExportDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.commaSeparatedText] }
+
+    let csvText: String
+
+    init(csvText: String) {
+        self.csvText = csvText
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        if let regularFileContents = configuration.file.regularFileContents,
+           let csvText = String(data: regularFileContents, encoding: .utf8) {
+            self.csvText = csvText
+        } else {
+            self.csvText = ""
+        }
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: Data(csvText.utf8))
     }
 }
 

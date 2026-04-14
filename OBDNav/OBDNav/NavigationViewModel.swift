@@ -45,12 +45,19 @@ final class NavigationViewModel: ObservableObject {
     @Published private(set) var compassCalibrationOffsetDegrees: CLLocationDirection = 0
     @Published private(set) var compassCalibrationMessage = "Tap a road to calibrate the compass."
     @Published private(set) var transientBannerText: String?
+    @Published private(set) var isCompassOffsetLocked = false
     @Published private(set) var isOBDMarkerVisible = true
     @Published private(set) var isRoadLockEnabled = false
     @Published private(set) var isResolvingRoadLock = false
     @Published private(set) var roadLockCoordinate: CLLocationCoordinate2D?
     @Published private(set) var roadLockTrailSegments: [[CLLocationCoordinate2D]] = []
     @Published private(set) var roadLockStatusMessage = "Road lock is off."
+    @Published private(set) var isTestRecording = false
+    @Published private(set) var testStatusMessage = "Ready to log a CSV sample every 20 seconds."
+    @Published private(set) var testSampleCount = 0
+    @Published private(set) var pendingTestCSV = ""
+    @Published private(set) var pendingTestExportFilename = "obdnav-test.csv"
+    @Published private(set) var isShowingTestExport = false
 
     let locationService: LocationService
     let obdManager: OBDBLEManager
@@ -62,6 +69,7 @@ final class NavigationViewModel: ObservableObject {
     private var compassCalibrationTask: Task<Void, Never>?
     private var roadLockTask: Task<Void, Never>?
     private var roadLockRouteExtensionTask: Task<Void, Never>?
+    private var testLoggingTask: Task<Void, Never>?
     private var transientBannerTask: Task<Void, Never>?
     private var lastTick = Date()
     private let previewMode: Bool
@@ -72,6 +80,8 @@ final class NavigationViewModel: ObservableObject {
     private var stationaryDetector = StationaryDetector()
     private var stationaryVelocityHoldActive = false
     private var reportedOBDSpeedKPH: Double?
+    private var phoneCompassCalibrationOffsetDegrees: CLLocationDirection = 0
+    private var externalSensorCalibrationOffsetDegrees: CLLocationDirection = 0
     private var rawCompassHeadingDegrees: CLLocationDirection?
     private var fusedSensorHeadingDegrees: CLLocationDirection?
     private var externalSensorHeadingDegrees: CLLocationDirection?
@@ -89,8 +99,13 @@ final class NavigationViewModel: ObservableObject {
     private var lastRoadLockRouteExtensionAttemptDate = Date.distantPast
     private var lastRoadHeadingNotificationDate = Date.distantPast
     private var lastRoadHeadingNotificationDegrees: CLLocationDirection?
+    private var testEntries: [TestLogEntry] = []
+    private var testGPSDistanceTravelledMeters: CLLocationDistance = 0
+    private var lastTestGPSCoordinate: CLLocationCoordinate2D?
+    private var lastTestSnapshotDate: Date?
 
-    private static let compassCalibrationOffsetDefaultsKey = "CompassCalibrationOffsetDegrees"
+    private static let phoneCompassCalibrationOffsetDefaultsKey = "PhoneCompassCalibrationOffsetDegrees"
+    private static let externalSensorCalibrationOffsetDefaultsKey = "ExternalSensorCalibrationOffsetDegrees"
     private static let roadLockRefreshInterval: TimeInterval = 0.9
     private static let roadLockRefreshDistanceMeters: CLLocationDistance = 10
     private static let roadLockRouteExtensionTriggerDistanceMeters: CLLocationDistance = 45
@@ -119,6 +134,12 @@ final class NavigationViewModel: ObservableObject {
     private static let roadHeadingNotificationChangeThresholdDegrees = 3.0
     private static let roadHeadingNotificationCooldown: TimeInterval = 3.0
     private static let transientBannerDuration: TimeInterval = 2.4
+    private static let testLoggingInterval: TimeInterval = 20.0
+    private static let testExportDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 
     static let defaultRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 51.5074, longitude: -0.1278),
@@ -201,6 +222,14 @@ final class NavigationViewModel: ObservableObject {
         }
 
         return "Connect the BLE sensor first, then enable it here."
+    }
+
+    var compassOffsetLockButtonTitle: String {
+        isCompassOffsetLocked ? "Offset Locked" : "Offset Unlocked"
+    }
+
+    var compassOffsetLockButtonSystemImage: String {
+        isCompassOffsetLocked ? "lock.fill" : "lock.open.fill"
     }
 
     var calibrationButtonTitle: String {
@@ -287,6 +316,18 @@ final class NavigationViewModel: ObservableObject {
         return "Road Lock Off"
     }
 
+    var testButtonTitle: String {
+        isTestRecording ? "Stop Test" : "Start Test"
+    }
+
+    var testButtonSubtitle: String {
+        if isTestRecording {
+            return "Logging a CSV row every 20 seconds. Press stop to save the file."
+        }
+
+        return "Record timestamped GPS, raw OBD, and road-lock gap data to a CSV export."
+    }
+
     var shouldShowRoadLockOverlay: Bool {
         isRoadLockEnabled
     }
@@ -356,9 +397,13 @@ final class NavigationViewModel: ObservableObject {
         self.motionService = motionService
         self.sensorManager = sensorManager
         self.previewMode = previewMode
-        self.compassCalibrationOffsetDegrees = UserDefaults.standard.double(
-            forKey: Self.compassCalibrationOffsetDefaultsKey
+        self.phoneCompassCalibrationOffsetDegrees = UserDefaults.standard.double(
+            forKey: Self.phoneCompassCalibrationOffsetDefaultsKey
         )
+        self.externalSensorCalibrationOffsetDegrees = UserDefaults.standard.double(
+            forKey: Self.externalSensorCalibrationOffsetDefaultsKey
+        )
+        self.compassCalibrationOffsetDegrees = phoneCompassCalibrationOffsetDegrees
 
         if previewMode {
             seedPreviewState()
@@ -372,6 +417,7 @@ final class NavigationViewModel: ObservableObject {
         compassCalibrationTask?.cancel()
         roadLockTask?.cancel()
         roadLockRouteExtensionTask?.cancel()
+        testLoggingTask?.cancel()
     }
 
     func start() {
@@ -519,6 +565,42 @@ final class NavigationViewModel: ObservableObject {
         }
     }
 
+    private func startTestSession() {
+        isTestRecording = true
+        testEntries = []
+        testGPSDistanceTravelledMeters = 0
+        lastTestGPSCoordinate = gpsCoordinate
+        lastTestSnapshotDate = nil
+        testSampleCount = 0
+        pendingTestCSV = ""
+        isShowingTestExport = false
+        pendingTestExportFilename = makeTestExportFilename(for: Date())
+        testStatusMessage = "Test running. Logging a CSV row every 20 seconds."
+
+        testLoggingTask?.cancel()
+        testLoggingTask = Task { [weak self] in
+            guard let self else { return }
+
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Self.testLoggingInterval))
+                guard !Task.isCancelled else { return }
+                self.recordTestSnapshot()
+            }
+        }
+    }
+
+    private func stopTestSession() {
+        isTestRecording = false
+        testLoggingTask?.cancel()
+        testLoggingTask = nil
+
+        recordTestSnapshot(force: true)
+        pendingTestCSV = buildTestCSV()
+        pendingTestExportFilename = makeTestExportFilename(for: Date())
+        isShowingTestExport = true
+        testStatusMessage = "CSV ready to save."
+    }
+
     func applyManualCompassCalibrationOffset(_ input: String) {
         let normalizedInput = input
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -542,6 +624,40 @@ final class NavigationViewModel: ObservableObject {
             compassCalibrationOffsetDegrees + deltaDegrees,
             messagePrefix: "Compass offset"
         )
+    }
+
+    func toggleCompassOffsetLock() {
+        isCompassOffsetLocked.toggle()
+        transientBannerText = nil
+        compassCalibrationMessage = isCompassOffsetLocked
+            ? "Compass offset locked. Road lock and manual calibration cannot change it."
+            : "Compass offset unlocked."
+    }
+
+    func toggleTestSession() {
+        if isTestRecording {
+            stopTestSession()
+        } else {
+            startTestSession()
+        }
+    }
+
+    func dismissTestExport() {
+        isShowingTestExport = false
+        pendingTestCSV = ""
+    }
+
+    func handleTestExportCompletion(_ result: Result<URL, Error>) {
+        defer { dismissTestExport() }
+
+        switch result {
+        case .success:
+            testStatusMessage = "CSV export completed."
+        case .failure(let error):
+            testStatusMessage = error.localizedDescription.isEmpty
+                ? "CSV export was cancelled."
+                : "CSV export failed: \(error.localizedDescription)"
+        }
     }
 
     private func bind() {
@@ -645,8 +761,108 @@ final class NavigationViewModel: ObservableObject {
             .assign(to: &$connectedSensorID)
     }
 
+    private func updateTestDistance(with coordinate: CLLocationCoordinate2D) {
+        guard isTestRecording else {
+            lastTestGPSCoordinate = coordinate
+            return
+        }
+
+        if let lastTestGPSCoordinate {
+            let distance = CLLocation(latitude: lastTestGPSCoordinate.latitude, longitude: lastTestGPSCoordinate.longitude)
+                .distance(from: CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude))
+            testGPSDistanceTravelledMeters += distance
+        }
+
+        lastTestGPSCoordinate = coordinate
+    }
+
+    private func recordTestSnapshot(force: Bool = false) {
+        guard isTestRecording || force else { return }
+
+        let now = Date()
+        if force,
+           let lastTestSnapshotDate,
+           now.timeIntervalSince(lastTestSnapshotDate) < 1.0 {
+            return
+        }
+
+        let gpsToOBDDistanceMeters = markerDistance(from: gpsCoordinate, to: obdCoordinate)
+        let gpsToRoadLockDistanceMeters = markerDistance(from: gpsCoordinate, to: roadLockCoordinate)
+        let isOnSameRoad = isGPSMarkerOnCurrentRoadLockRoad()
+
+        testEntries.append(
+            TestLogEntry(
+                timestamp: now,
+                gpsDistanceTravelledMeters: testGPSDistanceTravelledMeters,
+                gpsToRawOBDDistanceMeters: gpsToOBDDistanceMeters,
+                gpsToRoadLockDistanceMeters: gpsToRoadLockDistanceMeters,
+                gpsAndRoadLockOnSameRoad: isOnSameRoad
+            )
+        )
+
+        lastTestSnapshotDate = now
+        testSampleCount = testEntries.count
+
+        if isTestRecording {
+            testStatusMessage = "Recorded \(testEntries.count) sample\(testEntries.count == 1 ? "" : "s")."
+        }
+    }
+
+    private func buildTestCSV() -> String {
+        var lines = ["timestamp,gps_distance_travelled_m,gps_to_raw_obd_m,gps_to_road_lock_m,gps_and_road_lock_same_road"]
+
+        for entry in testEntries {
+            lines.append([
+                Self.testExportDateFormatter.string(from: entry.timestamp),
+                csvNumber(entry.gpsDistanceTravelledMeters),
+                csvNumber(entry.gpsToRawOBDDistanceMeters),
+                csvNumber(entry.gpsToRoadLockDistanceMeters),
+                entry.gpsAndRoadLockOnSameRoad ? "yes" : "no"
+            ].joined(separator: ","))
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func makeTestExportFilename(for date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_GB_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        return "obdnav-test-\(formatter.string(from: date)).csv"
+    }
+
+    private func csvNumber(_ value: Double?) -> String {
+        guard let value else { return "" }
+        return value.formatted(.number.precision(.fractionLength(1)))
+    }
+
+    private func markerDistance(
+        from source: CLLocationCoordinate2D?,
+        to target: CLLocationCoordinate2D?
+    ) -> CLLocationDistance? {
+        guard let source, let target else { return nil }
+
+        return CLLocation(latitude: source.latitude, longitude: source.longitude)
+            .distance(from: CLLocation(latitude: target.latitude, longitude: target.longitude))
+    }
+
+    private func isGPSMarkerOnCurrentRoadLockRoad() -> Bool {
+        guard let gpsCoordinate else { return false }
+        guard roadLockCoordinate != nil else { return false }
+        guard !activeRoadLockRouteCoordinates.isEmpty else { return false }
+
+        return RoadLockMatcher.isLikelyOnSameRoad(
+            gpsCoordinate,
+            as: activeRoadLockRouteCoordinates
+        )
+    }
+
     private func handleGPSLocation(_ location: CLLocation?) {
         guard let location else { return }
+
+        updateTestDistance(with: location.coordinate)
 
         gpsCoordinate = location.coordinate
         gpsSpeedKPH = max(location.speed, 0) * 3.6
@@ -932,11 +1148,12 @@ final class NavigationViewModel: ObservableObject {
         _ offsetDegrees: CLLocationDirection,
         messagePrefix: String
     ) {
-        compassCalibrationOffsetDegrees = normalizedSignedDegrees(offsetDegrees)
-        UserDefaults.standard.set(
-            compassCalibrationOffsetDegrees,
-            forKey: Self.compassCalibrationOffsetDefaultsKey
-        )
+        guard !isCompassOffsetLocked else {
+            compassCalibrationMessage = "Compass offset is locked."
+            return
+        }
+
+        saveActiveCompassCalibrationOffset(normalizedSignedDegrees(offsetDegrees))
 
         if let stabilizedSensorHeadingDegrees {
             headingDegrees = normalizeDegrees(stabilizedSensorHeadingDegrees + compassCalibrationOffsetDegrees)
@@ -956,6 +1173,7 @@ final class NavigationViewModel: ObservableObject {
         }
 
         isExternalSensorEnabled = true
+        syncActiveCompassCalibrationOffset()
         rawCompassHeadingDegrees = nil
         fusedSensorHeadingDegrees = nil
         lastMotionYawRadians = nil
@@ -974,6 +1192,7 @@ final class NavigationViewModel: ObservableObject {
 
     private func disableExternalSensorUsage() {
         isExternalSensorEnabled = false
+        syncActiveCompassCalibrationOffset()
         externalSensorHeadingDegrees = nil
         externalFusedSensorHeadingDegrees = nil
         lastExternalSensorSampleDate = nil
@@ -1409,12 +1628,9 @@ final class NavigationViewModel: ObservableObject {
         )
 
         guard abs(updatedOffsetDegrees - compassCalibrationOffsetDegrees) >= 0.05 else { return }
+        guard !isCompassOffsetLocked else { return }
 
-        compassCalibrationOffsetDegrees = updatedOffsetDegrees
-        UserDefaults.standard.set(
-            compassCalibrationOffsetDegrees,
-            forKey: Self.compassCalibrationOffsetDefaultsKey
-        )
+        saveActiveCompassCalibrationOffset(updatedOffsetDegrees)
 
         if let stabilizedSensorHeadingDegrees {
             headingDegrees = normalizeDegrees(stabilizedSensorHeadingDegrees + compassCalibrationOffsetDegrees)
@@ -1433,6 +1649,30 @@ final class NavigationViewModel: ObservableObject {
 
     private var currentHeadingReferenceSpeedKPH: Double {
         max(obdSpeedKPH ?? 0, 0)
+    }
+
+    private func saveActiveCompassCalibrationOffset(_ offsetDegrees: CLLocationDirection) {
+        compassCalibrationOffsetDegrees = normalizedSignedDegrees(offsetDegrees)
+
+        if isExternalSensorEnabled {
+            externalSensorCalibrationOffsetDegrees = compassCalibrationOffsetDegrees
+            UserDefaults.standard.set(
+                externalSensorCalibrationOffsetDegrees,
+                forKey: Self.externalSensorCalibrationOffsetDefaultsKey
+            )
+        } else {
+            phoneCompassCalibrationOffsetDegrees = compassCalibrationOffsetDegrees
+            UserDefaults.standard.set(
+                phoneCompassCalibrationOffsetDegrees,
+                forKey: Self.phoneCompassCalibrationOffsetDefaultsKey
+            )
+        }
+    }
+
+    private func syncActiveCompassCalibrationOffset() {
+        compassCalibrationOffsetDegrees = isExternalSensorEnabled
+            ? externalSensorCalibrationOffsetDegrees
+            : phoneCompassCalibrationOffsetDegrees
     }
 
     private var calibratedCompassHeadingDegrees: CLLocationDirection? {
@@ -1578,6 +1818,14 @@ final class NavigationViewModel: ObservableObject {
         connectedDongleID = UUID()
         obdManager.setPreviewState(speedKPH: 3.8, connectionState: .connected("Demo OBD"))
     }
+}
+
+private struct TestLogEntry {
+    let timestamp: Date
+    let gpsDistanceTravelledMeters: CLLocationDistance
+    let gpsToRawOBDDistanceMeters: CLLocationDistance?
+    let gpsToRoadLockDistanceMeters: CLLocationDistance?
+    let gpsAndRoadLockOnSameRoad: Bool
 }
 
 extension NavigationViewModel {

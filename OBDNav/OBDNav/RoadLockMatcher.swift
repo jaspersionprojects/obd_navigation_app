@@ -143,6 +143,18 @@ enum RoadLockMatcher {
         return projection
     }
 
+    static func isLikelyOnSameRoad(
+        _ coordinate: CLLocationCoordinate2D,
+        as routeCoordinates: [CLLocationCoordinate2D],
+        maximumDistanceMeters: CLLocationDistance = 18
+    ) -> Bool {
+        guard let projection = closestProjection(on: routeCoordinates, to: coordinate) else {
+            return false
+        }
+
+        return projection.distanceMeters <= maximumDistanceMeters
+    }
+
     static func advance(
         _ projection: RoadLockProjection,
         on routeCoordinates: [CLLocationCoordinate2D],
