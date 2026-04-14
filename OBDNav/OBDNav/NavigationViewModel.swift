@@ -119,6 +119,9 @@ final class NavigationViewModel: ObservableObject {
     private static let movingCompassCorrectionClampDegrees = 0.35
     private static let stableCompassCorrectionClampDegrees = 1.4
     private static let maximumCompassCorrectionDeltaDegrees = 110.0
+    private static let maximumAbsoluteHeadingCorrectionWithoutGyroDegrees = 18.0
+    private static let absoluteHeadingCorrectionGyroAllowanceMultiplier = 3.2
+    private static let absoluteHeadingCorrectionRotationAllowanceDegrees = 6.0
     private static let minimumRoadHeadingCorrectionSpeedKPH = 8.0
     private static let fullRoadHeadingCorrectionSpeedKPH = 32.0
     private static let roadHeadingCorrectionWindowMeters = 28.0
@@ -731,7 +734,25 @@ final class NavigationViewModel: ObservableObject {
             .sink { [weak self] state in
                 guard let self else { return }
 
+                let previousSensorConnectionState = self.sensorConnectionState
                 self.sensorConnectionState = state
+
+                if case .connected(let name) = previousSensorConnectionState {
+                    switch state {
+                    case .connected:
+                        break
+                    case .failed(let message):
+                        self.showTransientBanner(
+                            message.isEmpty
+                                ? "Lost connection to sensor \(name)"
+                                : "Lost connection to sensor \(name): \(message)"
+                        )
+                    case .bluetoothOff:
+                        self.showTransientBanner("Lost connection to sensor \(name): Bluetooth is off")
+                    case .idle, .connecting:
+                        self.showTransientBanner("Lost connection to sensor \(name)")
+                    }
+                }
 
                 if case .connected = state {
                     self.isShowingSensorPicker = false
@@ -1235,6 +1256,7 @@ final class NavigationViewModel: ObservableObject {
 
         let currentYawRadians = sample.yawRadians
         let headingReferenceSpeedKPH = currentHeadingReferenceSpeedKPH
+        var recentGyroDeltaDegrees = 0.0
 
         if headingReferenceSpeedKPH <= Self.headingFreezeSpeedKPH {
             if fusedSensorHeadingDegrees == nil, let rawCompassHeadingDegrees {
@@ -1247,6 +1269,7 @@ final class NavigationViewModel: ObservableObject {
         if let previousYawRadians = lastMotionYawRadians {
             let yawDeltaRadians = normalizedSignedRadians(currentYawRadians - previousYawRadians)
             let yawDeltaDegrees = -(yawDeltaRadians * 180 / .pi)
+            recentGyroDeltaDegrees = yawDeltaDegrees
 
             if let fusedSensorHeadingDegrees {
                 self.fusedSensorHeadingDegrees = normalizeDegrees(fusedSensorHeadingDegrees + yawDeltaDegrees)
@@ -1279,6 +1302,14 @@ final class NavigationViewModel: ObservableObject {
             sample.correctedRotationRateRadPerSec.y * sample.correctedRotationRateRadPerSec.y +
             sample.correctedRotationRateRadPerSec.z * sample.correctedRotationRateRadPerSec.z
         )
+
+        guard isAbsoluteHeadingCorrectionPlausible(
+            absoluteHeadingDeltaDegrees: absoluteCompassDeltaDegrees,
+            recentGyroDeltaDegrees: recentGyroDeltaDegrees,
+            rotationMagnitude: rotationMagnitude
+        ) else {
+            return
+        }
 
         let speedWeight = correctionWeight(
             for: headingReferenceSpeedKPH,
@@ -1317,6 +1348,7 @@ final class NavigationViewModel: ObservableObject {
 
         let rawHeadingDegrees = sample.yawDegrees
         let headingReferenceSpeedKPH = currentHeadingReferenceSpeedKPH
+        var recentGyroDeltaDegrees = 0.0
 
         if headingReferenceSpeedKPH <= Self.headingFreezeSpeedKPH {
             if externalFusedSensorHeadingDegrees == nil {
@@ -1330,6 +1362,7 @@ final class NavigationViewModel: ObservableObject {
             let deltaTime = sample.timestamp.timeIntervalSince(lastExternalSensorSampleDate)
             if deltaTime > 0 {
                 let yawDeltaDegrees = -(sample.correctedRotationRateRadPerSec.z * deltaTime * 180 / .pi)
+                recentGyroDeltaDegrees = yawDeltaDegrees
 
                 if let externalFusedSensorHeadingDegrees {
                     self.externalFusedSensorHeadingDegrees = normalizeDegrees(externalFusedSensorHeadingDegrees + yawDeltaDegrees)
@@ -1360,6 +1393,14 @@ final class NavigationViewModel: ObservableObject {
             sample.correctedRotationRateRadPerSec.y * sample.correctedRotationRateRadPerSec.y +
             sample.correctedRotationRateRadPerSec.z * sample.correctedRotationRateRadPerSec.z
         )
+
+        guard isAbsoluteHeadingCorrectionPlausible(
+            absoluteHeadingDeltaDegrees: absoluteHeadingDeltaDegrees,
+            recentGyroDeltaDegrees: recentGyroDeltaDegrees,
+            rotationMagnitude: rotationMagnitude
+        ) else {
+            return
+        }
 
         let speedWeight = correctionWeight(
             for: headingReferenceSpeedKPH,
@@ -1763,6 +1804,23 @@ final class NavigationViewModel: ObservableObject {
         let normalizedValue = (speedKPH - minimumSpeedKPH) / (fullSpeedKPH - minimumSpeedKPH)
         let clampedValue = min(max(normalizedValue, 0), 1)
         return clampedValue * clampedValue * (3 - 2 * clampedValue)
+    }
+
+    private func isAbsoluteHeadingCorrectionPlausible(
+        absoluteHeadingDeltaDegrees: CLLocationDirection,
+        recentGyroDeltaDegrees: CLLocationDirection,
+        rotationMagnitude: Double
+    ) -> Bool {
+        let gyroTurnAllowanceDegrees =
+            abs(recentGyroDeltaDegrees) * Self.absoluteHeadingCorrectionGyroAllowanceMultiplier
+        let rotationAllowanceDegrees =
+            rotationMagnitude * 180 / .pi * Self.absoluteHeadingCorrectionRotationAllowanceDegrees
+        let allowedHeadingCorrectionDegrees =
+            Self.maximumAbsoluteHeadingCorrectionWithoutGyroDegrees +
+            gyroTurnAllowanceDegrees +
+            rotationAllowanceDegrees
+
+        return absoluteHeadingDeltaDegrees <= allowedHeadingCorrectionDegrees
     }
 
     private func normalizedSignedDegrees(_ value: CLLocationDirection) -> CLLocationDirection {
