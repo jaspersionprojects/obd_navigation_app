@@ -369,15 +369,26 @@ enum RoadLockMatcher {
     ) -> ScoredRoadLockCandidate? {
         let routeCoordinates = coordinates(for: route.polyline)
         guard
-            let localRouteCoordinates = trimmedRouteCoordinates(
+            let trimmedRouteCoordinates = trimmedRouteCoordinates(
                 routeCoordinates,
                 around: currentCoordinate,
                 radiusMeters: candidateSearchRadiusMeters
             ),
-            localRouteCoordinates.count > 1
+            trimmedRouteCoordinates.count > 1
         else {
             return nil
         }
+
+        let referenceHeadingDegrees = travelHeadingReference(
+            from: localTrail,
+            fallbackHeadingDegrees: currentHeadingDegrees
+        )
+
+        let localRouteCoordinates = orientRouteCoordinates(
+            trimmedRouteCoordinates,
+            preferredHeadingDegrees: referenceHeadingDegrees,
+            anchorCoordinate: localTrail.last ?? currentCoordinate
+        )
 
         guard let lastCoordinate = localTrail.last,
               let lastProjection = closestProjection(on: localRouteCoordinates, to: lastCoordinate) else {
@@ -474,6 +485,50 @@ enum RoadLockMatcher {
         }
 
         return candidates
+    }
+
+    private static func travelHeadingReference(
+        from localTrail: [CLLocationCoordinate2D],
+        fallbackHeadingDegrees: CLLocationDirection?
+    ) -> CLLocationDirection? {
+        if let fallbackHeadingDegrees {
+            return fallbackHeadingDegrees
+        }
+
+        guard localTrail.count > 1 else { return nil }
+
+        for index in stride(from: localTrail.count - 1, through: 1, by: -1) {
+            let previousCoordinate = localTrail[index - 1]
+            let currentCoordinate = localTrail[index]
+            let segmentDistance = distanceMetersBetween(previousCoordinate, currentCoordinate)
+            guard segmentDistance >= 1 else { continue }
+            return bearingDegrees(from: previousCoordinate, to: currentCoordinate)
+        }
+
+        return nil
+    }
+
+    private static func orientRouteCoordinates(
+        _ routeCoordinates: [CLLocationCoordinate2D],
+        preferredHeadingDegrees: CLLocationDirection?,
+        anchorCoordinate: CLLocationCoordinate2D
+    ) -> [CLLocationCoordinate2D] {
+        guard routeCoordinates.count > 1 else { return routeCoordinates }
+        guard let preferredHeadingDegrees else { return routeCoordinates }
+        guard let projection = closestProjection(on: routeCoordinates, to: anchorCoordinate) else {
+            return routeCoordinates
+        }
+
+        let forwardBearingDeltaDegrees = abs(signedDeltaDegrees(
+            from: preferredHeadingDegrees,
+            to: projection.bearingDegrees
+        ))
+
+        if forwardBearingDeltaDegrees <= 90 {
+            return routeCoordinates
+        }
+
+        return routeCoordinates.reversed()
     }
 
     private static func closestProjection(
