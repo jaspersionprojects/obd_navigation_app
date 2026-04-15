@@ -50,7 +50,7 @@ final class NavigationViewModel: ObservableObject {
     @Published private(set) var isRoadLockEnabled = false
     @Published private(set) var isResolvingRoadLock = false
     @Published private(set) var roadLockCoordinate: CLLocationCoordinate2D?
-    @Published private(set) var roadLockTrailSegments: [[CLLocationCoordinate2D]] = []
+    @Published private(set) var roadLockTrailSegments: [RoadLockTrailSegment] = []
     @Published private(set) var roadLockStatusMessage = "Road lock is off."
     @Published private(set) var isTestRecording = false
     @Published private(set) var testStatusMessage = "Ready to log a CSV sample every 20 seconds."
@@ -91,6 +91,7 @@ final class NavigationViewModel: ObservableObject {
     private var activeRoadLockRouteCoordinates: [CLLocationCoordinate2D] = []
     private var activeRoadLockProjection: RoadLockProjection?
     private var isRoadLockSegmentOpen = false
+    private var currentRoadLockTrailStyle: RoadLockTrailStyle = .locked
     private var lastRoadLockRefreshDate = Date.distantPast
     private var lastRoadLockRefreshCoordinate: CLLocationCoordinate2D?
     private var lastRoadLockSuccessfulMatchDate = Date.distantPast
@@ -560,7 +561,9 @@ final class NavigationViewModel: ObservableObject {
         obdTrailCoordinates = obdCoordinate.map { [$0] } ?? []
 
         if let roadLockCoordinate {
-            roadLockTrailSegments = [[roadLockCoordinate]]
+            roadLockTrailSegments = [
+                RoadLockTrailSegment(style: currentRoadLockTrailStyle, coordinates: [roadLockCoordinate])
+            ]
             isRoadLockSegmentOpen = true
         } else {
             roadLockTrailSegments = []
@@ -1085,13 +1088,27 @@ final class NavigationViewModel: ObservableObject {
 
     private func appendRoadLockCoordinate(_ coordinate: CLLocationCoordinate2D) {
         if !isRoadLockSegmentOpen || roadLockTrailSegments.isEmpty {
-            roadLockTrailSegments.append([coordinate])
+            roadLockTrailSegments.append(
+                RoadLockTrailSegment(style: currentRoadLockTrailStyle, coordinates: [coordinate])
+            )
             isRoadLockSegmentOpen = true
             return
         }
 
         var currentSegment = roadLockTrailSegments.removeLast()
-        appendCoordinate(coordinate, to: &currentSegment)
+
+        if currentSegment.style != currentRoadLockTrailStyle {
+            roadLockTrailSegments.append(currentSegment)
+            roadLockTrailSegments.append(
+                RoadLockTrailSegment(style: currentRoadLockTrailStyle, coordinates: [coordinate])
+            )
+            isRoadLockSegmentOpen = true
+            return
+        }
+
+        var coordinates = currentSegment.coordinates
+        appendCoordinate(coordinate, to: &coordinates)
+        currentSegment.coordinates = coordinates
         roadLockTrailSegments.append(currentSegment)
     }
 
@@ -1156,6 +1173,16 @@ final class NavigationViewModel: ObservableObject {
     private func handleRawCompassHeading(_ heading: CLLocationDirection?) {
         guard !isExternalSensorEnabled else { return }
         rawCompassHeadingDegrees = heading
+
+        if shouldFreezeHeadingWhileStationary {
+            if fusedSensorHeadingDegrees == nil {
+                fusedSensorHeadingDegrees = heading
+                if let calibratedCompassHeadingDegrees {
+                    headingDegrees = calibratedCompassHeadingDegrees
+                }
+            }
+            return
+        }
 
         if fusedSensorHeadingDegrees == nil {
             fusedSensorHeadingDegrees = heading
@@ -1231,6 +1258,7 @@ final class NavigationViewModel: ObservableObject {
         roadLockStatusMessage = "Matching the recent route to nearby roads."
         roadLockCoordinate = nil
         roadLockTrailSegments = []
+        currentRoadLockTrailStyle = .locked
         resetActiveRoadLockRoute()
         refreshRoadLockIfNeeded(force: true)
     }
@@ -1244,6 +1272,7 @@ final class NavigationViewModel: ObservableObject {
         isResolvingRoadLock = false
         roadLockCoordinate = nil
         roadLockStatusMessage = "Road lock is off."
+        currentRoadLockTrailStyle = .locked
         resetActiveRoadLockRoute()
     }
 
@@ -1258,7 +1287,7 @@ final class NavigationViewModel: ObservableObject {
         let headingReferenceSpeedKPH = currentHeadingReferenceSpeedKPH
         var recentGyroDeltaDegrees = 0.0
 
-        if headingReferenceSpeedKPH <= Self.headingFreezeSpeedKPH {
+        if shouldFreezeHeadingWhileStationary {
             if fusedSensorHeadingDegrees == nil, let rawCompassHeadingDegrees {
                 fusedSensorHeadingDegrees = rawCompassHeadingDegrees
             }
@@ -1347,46 +1376,16 @@ final class NavigationViewModel: ObservableObject {
         }
 
         let rawHeadingDegrees = sample.yawDegrees
-        let headingReferenceSpeedKPH = currentHeadingReferenceSpeedKPH
-        var recentGyroDeltaDegrees = 0.0
+        lastExternalSensorSampleDate = sample.timestamp
 
-        if headingReferenceSpeedKPH <= Self.headingFreezeSpeedKPH {
+        if shouldFreezeHeadingWhileStationary {
             if externalFusedSensorHeadingDegrees == nil {
                 externalFusedSensorHeadingDegrees = rawHeadingDegrees
             }
-            lastExternalSensorSampleDate = sample.timestamp
             return
         }
 
-        if let lastExternalSensorSampleDate {
-            let deltaTime = sample.timestamp.timeIntervalSince(lastExternalSensorSampleDate)
-            if deltaTime > 0 {
-                let yawDeltaDegrees = -(sample.correctedRotationRateRadPerSec.z * deltaTime * 180 / .pi)
-                recentGyroDeltaDegrees = yawDeltaDegrees
-
-                if let externalFusedSensorHeadingDegrees {
-                    self.externalFusedSensorHeadingDegrees = normalizeDegrees(externalFusedSensorHeadingDegrees + yawDeltaDegrees)
-                } else {
-                    self.externalFusedSensorHeadingDegrees = normalizeDegrees(rawHeadingDegrees + yawDeltaDegrees)
-                }
-            }
-        } else if externalFusedSensorHeadingDegrees == nil {
-            externalFusedSensorHeadingDegrees = rawHeadingDegrees
-        }
-
-        lastExternalSensorSampleDate = sample.timestamp
-
-        guard let externalFusedSensorHeadingDegrees else { return }
-
-        let headingDeltaDegrees = signedDeltaDegrees(
-            from: externalFusedSensorHeadingDegrees,
-            to: rawHeadingDegrees
-        )
-        let absoluteHeadingDeltaDegrees = abs(headingDeltaDegrees)
-
-        guard absoluteHeadingDeltaDegrees <= Self.maximumCompassCorrectionDeltaDegrees else {
-            return
-        }
+        externalFusedSensorHeadingDegrees = rawHeadingDegrees
 
         let rotationMagnitude = sqrt(
             sample.correctedRotationRateRadPerSec.x * sample.correctedRotationRateRadPerSec.x +
@@ -1394,36 +1393,6 @@ final class NavigationViewModel: ObservableObject {
             sample.correctedRotationRateRadPerSec.z * sample.correctedRotationRateRadPerSec.z
         )
 
-        guard isAbsoluteHeadingCorrectionPlausible(
-            absoluteHeadingDeltaDegrees: absoluteHeadingDeltaDegrees,
-            recentGyroDeltaDegrees: recentGyroDeltaDegrees,
-            rotationMagnitude: rotationMagnitude
-        ) else {
-            return
-        }
-
-        let speedWeight = correctionWeight(
-            for: headingReferenceSpeedKPH,
-            minimumSpeedKPH: Self.minimumCompassCorrectionSpeedKPH,
-            fullSpeedKPH: Self.fullCompassCorrectionSpeedKPH
-        )
-
-        guard speedWeight > 0 else { return }
-
-        let isRotationStable = rotationMagnitude <= Self.stableRotationRateThresholdRadPerSec
-        let baseCorrectionGain = isRotationStable ? Self.stableCompassCorrectionGain : Self.movingCompassCorrectionGain
-        let baseCorrectionClampDegrees = isRotationStable
-            ? Self.stableCompassCorrectionClampDegrees
-            : Self.movingCompassCorrectionClampDegrees
-        let correctionGain = baseCorrectionGain * speedWeight
-        let correctionClampDegrees = baseCorrectionClampDegrees * max(speedWeight, 0.2)
-
-        let boundedCorrectionDegrees = min(
-            max(headingDeltaDegrees * correctionGain, -correctionClampDegrees),
-            correctionClampDegrees
-        )
-
-        self.externalFusedSensorHeadingDegrees = normalizeDegrees(externalFusedSensorHeadingDegrees + boundedCorrectionDegrees)
         applyRoadHeadingCorrection(
             rotationMagnitude: rotationMagnitude,
             currentCalibratedHeadingDegrees: calibratedCompassHeadingDegrees
@@ -1435,6 +1404,7 @@ final class NavigationViewModel: ObservableObject {
         roadLockRouteExtensionTask = nil
         activeRoadLockRouteCoordinates = []
         activeRoadLockProjection = nil
+        currentRoadLockTrailStyle = .locked
         activeRoadLockRouteVersion += 1
         lastRoadLockRouteExtensionAttemptDate = .distantPast
         lastRoadLockSuccessfulMatchDate = .distantPast
@@ -1508,12 +1478,14 @@ final class NavigationViewModel: ObservableObject {
                    !self.activeRoadLockRouteCoordinates.isEmpty,
                    self.activeRoadLockProjection != nil {
                     self.roadLockConfidenceStreak = max(self.roadLockConfidenceStreak - 1, 0)
+                    self.currentRoadLockTrailStyle = .traveling
                     self.roadLockStatusMessage = "Holding the last matched road until the next road lock."
                 } else {
                     self.roadLockRouteExtensionTask?.cancel()
                     self.roadLockRouteExtensionTask = nil
                     self.activeRoadLockRouteCoordinates = []
                     self.activeRoadLockProjection = nil
+                    self.currentRoadLockTrailStyle = .locked
                     self.activeRoadLockRouteVersion += 1
                     self.lastRoadLockRouteExtensionAttemptDate = .distantPast
                     self.lastRoadLockSuccessfulMatchDate = .distantPast
@@ -1527,6 +1499,7 @@ final class NavigationViewModel: ObservableObject {
     }
 
     private func applyRoadLockMatch(_ match: RoadLockMatch) {
+        currentRoadLockTrailStyle = .locked
         activeRoadLockProjection = match.snappedProjection
         roadLockCoordinate = match.snappedCoordinate
         appendRoadLockCoordinate(match.snappedCoordinate)
@@ -1540,6 +1513,7 @@ final class NavigationViewModel: ObservableObject {
         guard !activeRoadLockRouteCoordinates.isEmpty else { return }
         guard let activeRoadLockProjection else { return }
 
+        currentRoadLockTrailStyle = .traveling
         scheduleRoadLockRouteExtensionIfNeeded()
 
         guard let nextProjection = RoadLockMatcher.advance(
@@ -1615,6 +1589,7 @@ final class NavigationViewModel: ObservableObject {
         currentCalibratedHeadingDegrees: CLLocationDirection?
     ) {
         guard isRoadLockEnabled else { return }
+        guard !shouldFreezeHeadingWhileStationary else { return }
         guard roadLockConfidenceStreak >= Self.minimumRoadHeadingConfidenceStreak else { return }
         guard Date().timeIntervalSince(lastRoadLockSuccessfulMatchDate) <= Self.roadHeadingCorrectionFreshnessInterval else { return }
         let speedKPH = currentHeadingReferenceSpeedKPH
@@ -1690,6 +1665,12 @@ final class NavigationViewModel: ObservableObject {
 
     private var currentHeadingReferenceSpeedKPH: Double {
         max(obdSpeedKPH ?? 0, 0)
+    }
+
+    private var shouldFreezeHeadingWhileStationary: Bool {
+        isStationaryByIMU ||
+        stationaryVelocityHoldActive ||
+        currentHeadingReferenceSpeedKPH <= Self.headingFreezeSpeedKPH
     }
 
     private func saveActiveCompassCalibrationOffset(_ offsetDegrees: CLLocationDirection) {
@@ -1857,12 +1838,18 @@ final class NavigationViewModel: ObservableObject {
         compassCalibrationMessage = "Saved offset +4.5°"
         isRoadLockEnabled = true
         roadLockCoordinate = CLLocationCoordinate2D(latitude: 51.50768, longitude: -0.12702)
-        roadLockTrailSegments = [[
-            CLLocationCoordinate2D(latitude: 51.50802, longitude: -0.12772),
-            CLLocationCoordinate2D(latitude: 51.50788, longitude: -0.12746),
-            CLLocationCoordinate2D(latitude: 51.50778, longitude: -0.12724),
-            CLLocationCoordinate2D(latitude: 51.50768, longitude: -0.12702)
-        ]]
+        currentRoadLockTrailStyle = .locked
+        roadLockTrailSegments = [
+            RoadLockTrailSegment(
+                style: .locked,
+                coordinates: [
+                    CLLocationCoordinate2D(latitude: 51.50802, longitude: -0.12772),
+                    CLLocationCoordinate2D(latitude: 51.50788, longitude: -0.12746),
+                    CLLocationCoordinate2D(latitude: 51.50778, longitude: -0.12724),
+                    CLLocationCoordinate2D(latitude: 51.50768, longitude: -0.12702)
+                ]
+            )
+        ]
         roadLockStatusMessage = "Road lock is following the nearest matching road path."
         cameraPosition = .region(
             MKCoordinateRegion(
@@ -1884,6 +1871,16 @@ private struct TestLogEntry {
     let gpsToRawOBDDistanceMeters: CLLocationDistance?
     let gpsToRoadLockDistanceMeters: CLLocationDistance?
     let gpsAndRoadLockOnSameRoad: Bool
+}
+
+struct RoadLockTrailSegment {
+    let style: RoadLockTrailStyle
+    var coordinates: [CLLocationCoordinate2D]
+}
+
+enum RoadLockTrailStyle {
+    case locked
+    case traveling
 }
 
 extension NavigationViewModel {

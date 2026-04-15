@@ -98,18 +98,11 @@ enum RoadLockMatcher {
             currentBearingDegrees: bestCandidate.lastProjection.bearingDegrees
         )
 
-        guard let snappedProjection = closestProjection(
-            on: extendedRouteCoordinates,
-            to: currentCoordinate
-        ) else {
-            return nil
-        }
-
         return RoadLockMatch(
             routeCoordinates: extendedRouteCoordinates,
-            snappedCoordinate: snappedProjection.coordinate,
-            snappedProjection: snappedProjection,
-            currentDistanceMeters: snappedProjection.distanceMeters
+            snappedCoordinate: bestCandidate.lastProjection.coordinate,
+            snappedProjection: bestCandidate.lastProjection,
+            currentDistanceMeters: bestCandidate.lastProjection.distanceMeters
         )
     }
 
@@ -491,11 +484,7 @@ enum RoadLockMatcher {
         from localTrail: [CLLocationCoordinate2D],
         fallbackHeadingDegrees: CLLocationDirection?
     ) -> CLLocationDirection? {
-        if let fallbackHeadingDegrees {
-            return fallbackHeadingDegrees
-        }
-
-        guard localTrail.count > 1 else { return nil }
+        guard localTrail.count > 1 else { return fallbackHeadingDegrees }
 
         for index in stride(from: localTrail.count - 1, through: 1, by: -1) {
             let previousCoordinate = localTrail[index - 1]
@@ -505,7 +494,7 @@ enum RoadLockMatcher {
             return bearingDegrees(from: previousCoordinate, to: currentCoordinate)
         }
 
-        return nil
+        return fallbackHeadingDegrees
     }
 
     private static func orientRouteCoordinates(

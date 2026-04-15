@@ -84,10 +84,10 @@ struct ContentView: View {
 
                 if viewModel.shouldShowRoadLockOverlay {
                     ForEach(Array(viewModel.roadLockTrailSegments.enumerated()), id: \.offset) { _, segment in
-                        if segment.count > 1 {
-                            MapPolyline(coordinates: segment)
+                        if segment.coordinates.count > 1 {
+                            MapPolyline(coordinates: segment.coordinates)
                                 .stroke(
-                                    Color(red: 0.96, green: 0.26, blue: 0.66).opacity(0.92),
+                                    roadLockTrailColor(for: segment.style).opacity(0.92),
                                     style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round)
                                 )
                         }
@@ -287,6 +287,15 @@ struct ContentView: View {
             .padding(.trailing, 20)
 
             Spacer()
+        }
+    }
+
+    private func roadLockTrailColor(for style: RoadLockTrailStyle) -> Color {
+        switch style {
+        case .locked:
+            return Color(red: 0.96, green: 0.26, blue: 0.66)
+        case .traveling:
+            return Color(red: 0.23, green: 0.72, blue: 0.38)
         }
     }
 }
