@@ -120,6 +120,11 @@ final class NavigationViewModel: ObservableObject {
     private static let movingCompassCorrectionClampDegrees = 0.35
     private static let stableCompassCorrectionClampDegrees = 1.4
     private static let maximumCompassCorrectionDeltaDegrees = 110.0
+    private static let movingExternalHeadingCorrectionGain = 0.012
+    private static let stableExternalHeadingCorrectionGain = 0.045
+    private static let movingExternalHeadingCorrectionClampDegrees = 0.2
+    private static let stableExternalHeadingCorrectionClampDegrees = 0.8
+    private static let maximumExternalHeadingCorrectionDeltaDegrees = 75.0
     private static let maximumAbsoluteHeadingCorrectionWithoutGyroDegrees = 18.0
     private static let absoluteHeadingCorrectionGyroAllowanceMultiplier = 3.2
     private static let absoluteHeadingCorrectionRotationAllowanceDegrees = 6.0
@@ -1376,6 +1381,22 @@ final class NavigationViewModel: ObservableObject {
         }
 
         let rawHeadingDegrees = sample.yawDegrees
+        let headingReferenceSpeedKPH = currentHeadingReferenceSpeedKPH
+        var recentGyroDeltaDegrees = 0.0
+
+        let rotationMagnitude = sqrt(
+            sample.correctedRotationRateRadPerSec.x * sample.correctedRotationRateRadPerSec.x +
+            sample.correctedRotationRateRadPerSec.y * sample.correctedRotationRateRadPerSec.y +
+            sample.correctedRotationRateRadPerSec.z * sample.correctedRotationRateRadPerSec.z
+        )
+
+        if let lastExternalSensorSampleDate, !shouldFreezeHeadingWhileStationary {
+            let deltaTime = sample.timestamp.timeIntervalSince(lastExternalSensorSampleDate)
+            if deltaTime > 0 {
+                recentGyroDeltaDegrees = -(sample.correctedRotationRateRadPerSec.z * deltaTime * 180 / .pi)
+            }
+        }
+
         lastExternalSensorSampleDate = sample.timestamp
 
         if shouldFreezeHeadingWhileStationary {
@@ -1385,13 +1406,70 @@ final class NavigationViewModel: ObservableObject {
             return
         }
 
-        externalFusedSensorHeadingDegrees = rawHeadingDegrees
+        if let externalFusedSensorHeadingDegrees {
+            self.externalFusedSensorHeadingDegrees = normalizeDegrees(
+                externalFusedSensorHeadingDegrees + recentGyroDeltaDegrees
+            )
+        } else {
+            externalFusedSensorHeadingDegrees = rawHeadingDegrees
+        }
 
-        let rotationMagnitude = sqrt(
-            sample.correctedRotationRateRadPerSec.x * sample.correctedRotationRateRadPerSec.x +
-            sample.correctedRotationRateRadPerSec.y * sample.correctedRotationRateRadPerSec.y +
-            sample.correctedRotationRateRadPerSec.z * sample.correctedRotationRateRadPerSec.z
+        guard let externalFusedSensorHeadingDegrees else {
+            return
+        }
+
+        let headingDeltaDegrees = signedDeltaDegrees(
+            from: externalFusedSensorHeadingDegrees,
+            to: rawHeadingDegrees
         )
+        let absoluteHeadingDeltaDegrees = abs(headingDeltaDegrees)
+
+        guard absoluteHeadingDeltaDegrees <= Self.maximumExternalHeadingCorrectionDeltaDegrees else {
+            applyRoadHeadingCorrection(
+                rotationMagnitude: rotationMagnitude,
+                currentCalibratedHeadingDegrees: calibratedCompassHeadingDegrees
+            )
+            return
+        }
+
+        guard isAbsoluteHeadingCorrectionPlausible(
+            absoluteHeadingDeltaDegrees: absoluteHeadingDeltaDegrees,
+            recentGyroDeltaDegrees: recentGyroDeltaDegrees,
+            rotationMagnitude: rotationMagnitude
+        ) else {
+            applyRoadHeadingCorrection(
+                rotationMagnitude: rotationMagnitude,
+                currentCalibratedHeadingDegrees: calibratedCompassHeadingDegrees
+            )
+            return
+        }
+
+        let speedWeight = correctionWeight(
+            for: headingReferenceSpeedKPH,
+            minimumSpeedKPH: Self.minimumCompassCorrectionSpeedKPH,
+            fullSpeedKPH: Self.fullCompassCorrectionSpeedKPH
+        )
+
+        if speedWeight > 0 {
+            let isRotationStable = rotationMagnitude <= Self.stableRotationRateThresholdRadPerSec
+            let baseCorrectionGain = isRotationStable
+                ? Self.stableExternalHeadingCorrectionGain
+                : Self.movingExternalHeadingCorrectionGain
+            let baseCorrectionClampDegrees = isRotationStable
+                ? Self.stableExternalHeadingCorrectionClampDegrees
+                : Self.movingExternalHeadingCorrectionClampDegrees
+            let correctionGain = baseCorrectionGain * speedWeight
+            let correctionClampDegrees = baseCorrectionClampDegrees * max(speedWeight, 0.2)
+
+            let boundedCorrectionDegrees = min(
+                max(headingDeltaDegrees * correctionGain, -correctionClampDegrees),
+                correctionClampDegrees
+            )
+
+            self.externalFusedSensorHeadingDegrees = normalizeDegrees(
+                externalFusedSensorHeadingDegrees + boundedCorrectionDegrees
+            )
+        }
 
         applyRoadHeadingCorrection(
             rotationMagnitude: rotationMagnitude,
