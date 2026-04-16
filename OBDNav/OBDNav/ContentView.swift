@@ -27,10 +27,10 @@ struct ContentView: View {
                 mapLayer
                 calibrationBanner(topInset: proxy.safeAreaInsets.top)
                 statusCapsule(topInset: proxy.safeAreaInsets.top)
-                offsetLockButton(topInset: proxy.safeAreaInsets.top)
+                mapActionHotbar(bottomInset: proxy.safeAreaInsets.bottom)
                 DashboardPanel(
                     viewModel: viewModel,
-                    collapsedHeight: 176,
+                    collapsedHeight: 76,
                     expandedHeight: min(proxy.size.height * 0.66, 560)
                 )
             }
@@ -125,6 +125,12 @@ struct ContentView: View {
                     }
                 }
 
+                if let obdSpawnPinCoordinate = viewModel.obdSpawnPinCoordinate {
+                    Annotation("OBD Spawn Pin", coordinate: obdSpawnPinCoordinate, anchor: .bottom) {
+                        SpawnPinBadge(isSelecting: viewModel.isSelectingOBDSpawnPin)
+                    }
+                }
+
                 if let candidate = viewModel.compassCalibrationCandidate,
                    let forwardCoordinate = viewModel.compassCalibrationForwardArrowCoordinate,
                    let reverseCoordinate = viewModel.compassCalibrationReverseArrowCoordinate {
@@ -191,9 +197,15 @@ struct ContentView: View {
             .simultaneousGesture(
                 SpatialTapGesture(coordinateSpace: .local)
                     .onEnded { value in
+                        guard let coordinate = proxy.convert(value.location, from: .local) else { return }
+
+                        if viewModel.isSelectingOBDSpawnPin {
+                            viewModel.handleOBDSpawnPinTap(at: coordinate)
+                            return
+                        }
+
                         guard viewModel.isCompassCalibrationActive else { return }
                         guard viewModel.compassCalibrationCandidate == nil else { return }
-                        guard let coordinate = proxy.convert(value.location, from: .local) else { return }
                         viewModel.handleCompassCalibrationTap(at: coordinate)
                     }
             )
@@ -255,39 +267,130 @@ struct ContentView: View {
         .allowsHitTesting(false)
     }
 
-    private func offsetLockButton(topInset: CGFloat) -> some View {
+    private func mapActionHotbar(bottomInset: CGFloat) -> some View {
         VStack {
-            HStack {
-                Spacer()
-
-                Button(action: viewModel.toggleCompassOffsetLock) {
-                    HStack(spacing: 8) {
-                        Image(systemName: viewModel.compassOffsetLockButtonSystemImage)
-                            .font(.system(size: 14, weight: .bold))
-
-                        Text(viewModel.compassOffsetLockButtonTitle)
-                            .font(.system(size: 13, weight: .bold, design: .rounded))
-                            .lineLimit(1)
-                    }
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 11)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(
-                                viewModel.isCompassOffsetLocked
-                                    ? Color(red: 0.15, green: 0.54, blue: 0.31).opacity(0.94)
-                                    : Color.black.opacity(0.86)
-                            )
-                    )
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.top, topInset + 74)
-            .padding(.trailing, 20)
-
             Spacer()
+
+            if !viewModel.isPanelExpanded {
+                HStack(spacing: 8) {
+                    mapActionButton(
+                        title: "Snap",
+                        systemImage: "location.fill",
+                        background: LinearGradient(
+                            colors: [
+                                Color(red: 0.99, green: 0.56, blue: 0.18),
+                                Color(red: 0.91, green: 0.33, blue: 0.04)
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    ) {
+                        viewModel.snapOBDToGPS()
+                    }
+
+                    mapActionButton(
+                        title: "Road",
+                        systemImage: viewModel.isRoadLockEnabled ? "lock.fill" : "lock.open.fill",
+                        background: LinearGradient(
+                            colors: viewModel.isRoadLockEnabled
+                                ? [
+                                    Color(red: 0.98, green: 0.56, blue: 0.80),
+                                    Color(red: 0.87, green: 0.25, blue: 0.60)
+                                ]
+                                : [
+                                    Color.black.opacity(0.90),
+                                    Color.black.opacity(0.80)
+                                ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ),
+                        foreground: viewModel.isRoadLockEnabled ? .black : .white
+                    ) {
+                        viewModel.toggleRoadLock()
+                    }
+
+                    mapActionButton(
+                        title: viewModel.isCompassCalibrationActive ? "Cancel" : "Cal",
+                        systemImage: viewModel.isCompassCalibrationActive ? "xmark.circle.fill" : "scope",
+                        background: LinearGradient(
+                            colors: viewModel.isCompassCalibrationActive
+                                ? [
+                                    Color(red: 1.0, green: 0.84, blue: 0.66),
+                                    Color(red: 0.96, green: 0.66, blue: 0.30)
+                                ]
+                                : [
+                                    Color.black.opacity(0.90),
+                                    Color.black.opacity(0.80)
+                                ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ),
+                        foreground: viewModel.isCompassCalibrationActive ? .black : .white
+                    ) {
+                        viewModel.toggleCompassCalibration()
+                    }
+
+                    mapActionButton(
+                        title: viewModel.isCompassOffsetLocked ? "Locked" : "Offset",
+                        systemImage: viewModel.compassOffsetLockButtonSystemImage,
+                        background: LinearGradient(
+                            colors: viewModel.isCompassOffsetLocked
+                                ? [
+                                    Color(red: 0.25, green: 0.70, blue: 0.39),
+                                    Color(red: 0.13, green: 0.49, blue: 0.27)
+                                ]
+                                : [
+                                    Color.black.opacity(0.90),
+                                    Color.black.opacity(0.80)
+                                ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ),
+                        foreground: viewModel.isCompassOffsetLocked ? .black : .white
+                    ) {
+                        viewModel.toggleCompassOffsetLock()
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(Color.black.opacity(0.88))
+                )
+                .padding(.horizontal, 18)
+                .padding(.bottom, max(bottomInset, 12) + 64)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
+        .animation(.spring(response: 0.30, dampingFraction: 0.84), value: viewModel.isPanelExpanded)
+        .allowsHitTesting(!viewModel.isPanelExpanded)
+    }
+
+    private func mapActionButton(
+        title: String,
+        systemImage: String,
+        background: LinearGradient,
+        foreground: Color = .white,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 5) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 15, weight: .bold))
+
+                Text(title)
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(foreground)
+            .frame(maxWidth: .infinity, minHeight: 56)
+            .padding(.horizontal, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(background)
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     private func roadLockTrailColor(for style: RoadLockTrailStyle) -> Color {
@@ -326,6 +429,32 @@ private struct CalibrationDirectionArrow: View {
                 .foregroundStyle(tint)
                 .rotationEffect(.degrees(bearingDegrees))
         }
+    }
+}
+
+private struct SpawnPinBadge: View {
+    let isSelecting: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ZStack {
+                Circle()
+                    .fill(isSelecting ? Color(red: 1.0, green: 0.76, blue: 0.34) : Color(red: 0.99, green: 0.56, blue: 0.18))
+                    .frame(width: 38, height: 38)
+
+                Image(systemName: "mappin.and.ellipse")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+
+            Text("Spawn")
+                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Capsule(style: .continuous).fill(Color.white.opacity(0.96)))
+                .offset(y: -2)
+        }
+        .shadow(color: Color.black.opacity(0.18), radius: 8, x: 0, y: 4)
     }
 }
 

@@ -50,6 +50,8 @@ final class NavigationViewModel: ObservableObject {
     @Published private(set) var isRoadLockEnabled = false
     @Published private(set) var isResolvingRoadLock = false
     @Published private(set) var roadLockCoordinate: CLLocationCoordinate2D?
+    @Published private(set) var isSelectingOBDSpawnPin = false
+    @Published private(set) var obdSpawnPinCoordinate: CLLocationCoordinate2D?
     @Published private(set) var roadLockTrailSegments: [RoadLockTrailSegment] = []
     @Published private(set) var roadLockStatusMessage = "Road lock is off."
     @Published private(set) var isTestRecording = false
@@ -291,6 +293,18 @@ final class NavigationViewModel: ObservableObject {
 
     var obdMarkerButtonSubtitle: String {
         isOBDMarkerVisible ? "Hide the orange raw OBD marker from the map." : "Show the orange raw OBD marker on the map."
+    }
+
+    var obdSpawnButtonTitle: String {
+        isSelectingOBDSpawnPin ? "Cancel Spawn Pin" : "Place Spawn Pin"
+    }
+
+    var obdSpawnButtonSubtitle: String {
+        if isSelectingOBDSpawnPin {
+            return "Tap the map and the OBD marker will move there instantly."
+        }
+
+        return "Choose where the OBD marker should spawn."
     }
 
     var roadLockButtonSubtitle: String {
@@ -559,6 +573,42 @@ final class NavigationViewModel: ObservableObject {
 
     func toggleOBDMarkerVisibility() {
         isOBDMarkerVisible.toggle()
+    }
+
+    func toggleOBDSpawnPinPlacement() {
+        isSelectingOBDSpawnPin.toggle()
+
+        if isSelectingOBDSpawnPin {
+            showTransientBanner("Tap the map to spawn the OBD marker.")
+        }
+    }
+
+    func handleOBDSpawnPinTap(at coordinate: CLLocationCoordinate2D) {
+        guard isSelectingOBDSpawnPin else { return }
+        obdSpawnPinCoordinate = coordinate
+        isSelectingOBDSpawnPin = false
+        applyOBDSpawnPin()
+    }
+
+    private func applyOBDSpawnPin() {
+        guard let obdSpawnPinCoordinate else {
+            showTransientBanner("Place a spawn pin first.")
+            return
+        }
+
+        obdCoordinate = obdSpawnPinCoordinate
+        obdTrailCoordinates = [obdSpawnPinCoordinate]
+
+        if isRoadLockEnabled {
+            roadLockCoordinate = nil
+            roadLockTrailSegments = []
+            currentRoadLockTrailStyle = .locked
+            resetActiveRoadLockRoute()
+            roadLockStatusMessage = "Road lock is waiting for fresh OBD movement."
+        }
+
+        updateGap()
+        showTransientBanner("OBD marker spawned at the selected pin.")
     }
 
     func clearAllTrails() {

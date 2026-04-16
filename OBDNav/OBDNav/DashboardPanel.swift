@@ -13,12 +13,10 @@ struct DashboardPanel: View {
     let collapsedHeight: CGFloat
     let expandedHeight: CGFloat
 
-    @GestureState private var dragOffset: CGFloat = 0
     @State private var manualCalibrationOffsetText = ""
 
     var body: some View {
-        let baseOffset = viewModel.isPanelExpanded ? 0 : expandedHeight - collapsedHeight
-        let interactiveOffset = clampOffset(baseOffset + dragOffset)
+        let panelOffset = viewModel.isPanelExpanded ? 0 : expandedHeight - collapsedHeight
 
         VStack(spacing: 18) {
             panelHandle
@@ -38,9 +36,9 @@ struct DashboardPanel: View {
                 .strokeBorder(Color.white.opacity(0.5), lineWidth: 1)
         )
         .padding(.horizontal, 14)
-        .offset(y: interactiveOffset)
+        .offset(y: panelOffset)
         .shadow(color: Color.black.opacity(0.18), radius: 24, x: 0, y: -8)
-        .animation(.spring(response: 0.34, dampingFraction: 0.84), value: viewModel.isPanelExpanded)
+        .animation(.spring(response: 0.34, dampingFraction: 0.86), value: viewModel.isPanelExpanded)
         .onAppear {
             syncManualCalibrationOffsetText()
         }
@@ -50,12 +48,25 @@ struct DashboardPanel: View {
     }
 
     private var panelHandle: some View {
-        Capsule()
-            .fill(Color.black.opacity(0.18))
-            .frame(width: 58, height: 7)
-            .padding(.top, 4)
+        Button {
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+                viewModel.isPanelExpanded.toggle()
+            }
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: viewModel.isPanelExpanded ? "chevron.compact.down" : "chevron.compact.up")
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundStyle(Color.black.opacity(0.44))
+
+                Capsule()
+                    .fill(Color.black.opacity(0.18))
+                    .frame(width: 58, height: 6)
+            }
+            .frame(width: 96, height: 36)
             .contentShape(Rectangle())
-            .gesture(verticalDragGesture)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(viewModel.isPanelExpanded ? "Minimise control panel" : "Maximise control panel"))
     }
 
     private var pageSelector: some View {
@@ -84,8 +95,6 @@ struct DashboardPanel: View {
                 index: 3
             )
         }
-        .contentShape(Rectangle())
-        .gesture(verticalDragGesture)
     }
 
     private var panelContent: some View {
@@ -148,8 +157,6 @@ struct DashboardPanel: View {
                     sensorConnectButton
                     sensorConnectionStatusCard
                 }
-
-                snapButton
             }
             .padding(.top, 2)
             .padding(.bottom, 4)
@@ -162,93 +169,22 @@ struct DashboardPanel: View {
             VStack(alignment: .leading, spacing: 18) {
                 Text("Controls")
                     .font(.system(size: 28, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-
-                Text("Calibrate the compass by tapping the road on the map and choosing the direction you are travelling.")
-                    .font(.system(size: 15, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.74))
-
-                Button(action: viewModel.toggleCompassCalibration) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 10) {
-                            Image(systemName: viewModel.isCompassCalibrationActive ? "xmark.circle.fill" : "scope")
-                                .font(.system(size: 19, weight: .bold))
-
-                            Text(viewModel.calibrationButtonTitle)
-                                .font(.system(size: 18, weight: .bold, design: .rounded))
-                                .lineLimit(2)
-                        }
-
-                        Text(viewModel.calibrationButtonSubtitle)
-                            .font(.system(size: 13, weight: .medium, design: .rounded))
-                            .foregroundStyle(Color.black.opacity(0.58))
-                            .multilineTextAlignment(.leading)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 4)
-                    .background(
-                        RoundedRectangle(cornerRadius: 26, style: .continuous)
-                            .fill(viewModel.isCompassCalibrationActive ? Color(red: 1.0, green: 0.86, blue: 0.78) : Color.white)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 26, style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
-                    )
                     .foregroundStyle(.black)
-                }
-                .buttonStyle(.plain)
-
-                Button(action: viewModel.toggleRoadLock) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 10) {
-                            Image(systemName: viewModel.isRoadLockEnabled ? "lock.fill" : "lock.open.fill")
-                                .font(.system(size: 19, weight: .bold))
-
-                            Text(viewModel.roadLockButtonTitle)
-                                .font(.system(size: 18, weight: .bold, design: .rounded))
-                                .lineLimit(2)
-                        }
-
-                        Text(viewModel.roadLockButtonSubtitle)
-                            .font(.system(size: 13, weight: .medium, design: .rounded))
-                            .foregroundStyle(Color.black.opacity(0.58))
-                            .multilineTextAlignment(.leading)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 4)
-                    .background(
-                        RoundedRectangle(cornerRadius: 26, style: .continuous)
-                            .fill(viewModel.isRoadLockEnabled ? Color(red: 1.0, green: 0.82, blue: 0.92) : Color.white)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 26, style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
-                    )
-                    .foregroundStyle(.black)
-                }
-                .buttonStyle(.plain)
 
                 HStack(spacing: 12) {
                     Button(action: viewModel.toggleOBDMarkerVisibility) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(spacing: 10) {
-                                Image(systemName: viewModel.isOBDMarkerVisible ? "eye.slash.fill" : "eye.fill")
-                                    .font(.system(size: 18, weight: .bold))
+                        VStack(spacing: 8) {
+                            Image(systemName: viewModel.isOBDMarkerVisible ? "eye.slash.fill" : "eye.fill")
+                                .font(.system(size: 18, weight: .bold))
 
-                                Text(viewModel.obdMarkerButtonTitle)
-                                    .font(.system(size: 16, weight: .bold, design: .rounded))
-                                    .lineLimit(2)
-                            }
-
-                            Text(viewModel.obdMarkerButtonSubtitle)
-                                .font(.system(size: 12, weight: .medium, design: .rounded))
-                                .foregroundStyle(Color.black.opacity(0.58))
-                                .multilineTextAlignment(.leading)
+                            Text(viewModel.obdMarkerButtonTitle)
+                                .font(.system(size: 14, weight: .bold, design: .rounded))
+                                .multilineTextAlignment(.center)
+                                .lineLimit(2)
+                                .minimumScaleFactor(0.78)
                         }
-                        .frame(maxWidth: .infinity, minHeight: 84, alignment: .leading)
-                        .padding(.horizontal, 16)
+                        .frame(maxWidth: .infinity, minHeight: 82, alignment: .center)
+                        .padding(.horizontal, 10)
                         .padding(.vertical, 4)
                         .background(
                             RoundedRectangle(cornerRadius: 24, style: .continuous)
@@ -259,23 +195,18 @@ struct DashboardPanel: View {
                     .buttonStyle(.plain)
 
                     Button(action: viewModel.clearAllTrails) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(spacing: 10) {
-                                Image(systemName: "trash.fill")
-                                    .font(.system(size: 18, weight: .bold))
+                        VStack(spacing: 8) {
+                            Image(systemName: "trash.fill")
+                                .font(.system(size: 18, weight: .bold))
 
-                                Text("Clear All Trails")
-                                    .font(.system(size: 16, weight: .bold, design: .rounded))
-                                    .lineLimit(2)
-                            }
-
-                            Text("Clear the GPS, OBD, and road-lock path history while keeping the live markers.")
-                                .font(.system(size: 12, weight: .medium, design: .rounded))
-                                .foregroundStyle(Color.black.opacity(0.58))
-                                .multilineTextAlignment(.leading)
+                            Text("Clear All Trails")
+                                .font(.system(size: 14, weight: .bold, design: .rounded))
+                                .multilineTextAlignment(.center)
+                                .lineLimit(2)
+                                .minimumScaleFactor(0.78)
                         }
-                        .frame(maxWidth: .infinity, minHeight: 84, alignment: .leading)
-                        .padding(.horizontal, 16)
+                        .frame(maxWidth: .infinity, minHeight: 82, alignment: .center)
+                        .padding(.horizontal, 10)
                         .padding(.vertical, 4)
                         .background(
                             RoundedRectangle(cornerRadius: 24, style: .continuous)
@@ -286,133 +217,38 @@ struct DashboardPanel: View {
                     .buttonStyle(.plain)
                 }
 
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(viewModel.calibrationStatusTitle)
-                                .font(.system(size: 16, weight: .bold, design: .rounded))
-                                .foregroundStyle(.white)
-
-                            Text(viewModel.compassCalibrationMessage)
-                                .font(.system(size: 14, weight: .medium, design: .rounded))
-                                .foregroundStyle(.white.opacity(0.7))
-                        }
-
-                        Spacer(minLength: 12)
-
-                        Text(compassOffsetText(viewModel.compassCalibrationOffsetDegrees))
-                            .font(.system(size: 18, weight: .bold, design: .rounded))
-                            .foregroundStyle(Color(red: 0.99, green: 0.70, blue: 0.43))
-                    }
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("How it works")
-                            .font(.system(size: 13, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.46))
-
-                        Text("1. Tap Calibrate Compass.\n2. Tap the road on the map.\n3. Pick the arrow that matches your direction.")
-                            .font(.system(size: 14, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.82))
-                    }
-
+                Button(action: viewModel.toggleOBDSpawnPinPlacement) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Manual offset")
-                            .font(.system(size: 13, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.46))
-
                         HStack(spacing: 10) {
-                            TextField("e.g. -12.5", text: $manualCalibrationOffsetText)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                                .keyboardType(.numbersAndPunctuation)
-                                .font(.system(size: 15, weight: .semibold, design: .rounded))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 14)
-                                .frame(height: 48)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                        .fill(Color.white.opacity(0.08))
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
-                                )
+                            Image(systemName: viewModel.isSelectingOBDSpawnPin ? "xmark.circle.fill" : "mappin.and.ellipse")
+                                .font(.system(size: 19, weight: .bold))
 
-                            Button {
-                                viewModel.applyManualCompassCalibrationOffset(manualCalibrationOffsetText)
-                                manualCalibrationOffsetText = String(
-                                    format: "%.1f",
-                                    viewModel.compassCalibrationOffsetDegrees
-                                )
-                            } label: {
-                                Text("Apply")
-                                    .font(.system(size: 15, weight: .bold, design: .rounded))
-                                    .frame(minWidth: 78, minHeight: 48)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                            .fill(Color(red: 0.99, green: 0.70, blue: 0.43))
-                                    )
-                                    .foregroundStyle(.black)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(18)
-                .background(
-                    RoundedRectangle(cornerRadius: 26, style: .continuous)
-                        .fill(Color.white.opacity(0.06))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 26, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
-                )
-
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(viewModel.roadLockStatusTitle)
+                            Text(viewModel.obdSpawnButtonTitle)
                                 .font(.system(size: 16, weight: .bold, design: .rounded))
-                                .foregroundStyle(.white)
-
-                            Text(viewModel.roadLockStatusMessage)
-                                .font(.system(size: 14, weight: .medium, design: .rounded))
-                                .foregroundStyle(.white.opacity(0.7))
+                                .lineLimit(2)
                         }
 
-                        Spacer(minLength: 12)
-
-                        Circle()
-                            .fill(viewModel.isRoadLockEnabled ? Color(red: 0.96, green: 0.26, blue: 0.66) : Color.white.opacity(0.24))
-                            .frame(width: 14, height: 14)
-                            .padding(.top, 4)
+                        Text(viewModel.obdSpawnButtonSubtitle)
+                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                            .foregroundStyle(Color.black.opacity(0.58))
+                            .multilineTextAlignment(.leading)
                     }
-
-                    Text("The pink marker and pink line only appear while the recent OBD route confidently matches nearby roads.")
-                        .font(.system(size: 14, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.82))
+                    .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .fill(viewModel.isSelectingOBDSpawnPin ? Color(red: 1.0, green: 0.90, blue: 0.78) : Color.white)
+                    )
+                    .foregroundStyle(.black)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(18)
-                .background(
-                    RoundedRectangle(cornerRadius: 26, style: .continuous)
-                        .fill(Color.white.opacity(0.06))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 26, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
-                )
+                .buttonStyle(.plain)
 
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(20)
         }
-        .background(
-            RoundedRectangle(cornerRadius: 30, style: .continuous)
-                .fill(Color.black.opacity(0.96))
-        )
     }
 
     private var nudgeControlsPage: some View {
@@ -420,22 +256,22 @@ struct DashboardPanel: View {
             VStack(alignment: .leading, spacing: 18) {
                 Text("Sensor")
                     .font(.system(size: 28, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.black)
 
                 Text("Connect the external BLE IMU sensor here, then enable it to replace the iPhone compass and motion sensors.")
                     .font(.system(size: 15, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.74))
+                    .foregroundStyle(.black.opacity(0.58))
 
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Sensor Status")
                                 .font(.system(size: 16, weight: .bold, design: .rounded))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(.black)
 
                             Text(viewModel.sensorStatusText)
                                 .font(.system(size: 14, weight: .medium, design: .rounded))
-                                .foregroundStyle(.white.opacity(0.72))
+                                .foregroundStyle(.black.opacity(0.62))
                         }
 
                         Spacer(minLength: 12)
@@ -448,17 +284,17 @@ struct DashboardPanel: View {
 
                     Text(viewModel.sensorConnectButtonSubtitle)
                         .font(.system(size: 14, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.82))
+                        .foregroundStyle(.black.opacity(0.72))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(18)
                 .background(
                     RoundedRectangle(cornerRadius: 26, style: .continuous)
-                        .fill(Color.white.opacity(0.06))
+                        .fill(Color.white.opacity(0.64))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 26, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                        .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
                 )
 
                 Button(action: viewModel.toggleExternalSensorUsage) {
@@ -495,7 +331,7 @@ struct DashboardPanel: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Current Offset")
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.46))
+                        .foregroundStyle(.black.opacity(0.42))
 
                     Text(compassOffsetText(viewModel.compassCalibrationOffsetDegrees))
                         .font(.system(size: 34, weight: .bold, design: .rounded))
@@ -503,17 +339,17 @@ struct DashboardPanel: View {
 
                     Text("Try larger moves first, then finish with ±1° nudges.")
                         .font(.system(size: 14, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.78))
+                        .foregroundStyle(.black.opacity(0.68))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(18)
                 .background(
                     RoundedRectangle(cornerRadius: 26, style: .continuous)
-                        .fill(Color.white.opacity(0.06))
+                        .fill(Color(red: 0.96, green: 0.90, blue: 0.72).opacity(0.9))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 26, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                        .strokeBorder(Color.white.opacity(0.5), lineWidth: 1)
                 )
 
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
@@ -527,17 +363,80 @@ struct DashboardPanel: View {
 
                 Text("Each tap updates the saved offset immediately and keeps the map calibration in sync.")
                     .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.68))
+                    .foregroundStyle(.black.opacity(0.58))
+
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Manual offset")
+                                .font(.system(size: 16, weight: .bold, design: .rounded))
+                                .foregroundStyle(.black)
+
+                            Text("Type a positive or negative offset in degrees and apply it to the active sensor heading.")
+                                .font(.system(size: 14, weight: .medium, design: .rounded))
+                                .foregroundStyle(.black.opacity(0.62))
+                        }
+
+                        Spacer(minLength: 12)
+
+                        Text(compassOffsetText(viewModel.compassCalibrationOffsetDegrees))
+                            .font(.system(size: 18, weight: .bold, design: .rounded))
+                            .foregroundStyle(Color(red: 0.99, green: 0.70, blue: 0.43))
+                    }
+
+                    HStack(spacing: 10) {
+                        TextField("e.g. -12.5", text: $manualCalibrationOffsetText)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.numbersAndPunctuation)
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.black)
+                            .padding(.horizontal, 14)
+                            .frame(height: 48)
+                            .background(
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .fill(Color.white.opacity(0.9))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
+                            )
+
+                        Button {
+                            viewModel.applyManualCompassCalibrationOffset(manualCalibrationOffsetText)
+                            manualCalibrationOffsetText = String(
+                                format: "%.1f",
+                                viewModel.compassCalibrationOffsetDegrees
+                            )
+                        } label: {
+                            Text("Apply")
+                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                .frame(minWidth: 78, minHeight: 48)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                        .fill(Color(red: 0.99, green: 0.70, blue: 0.43))
+                                )
+                                .foregroundStyle(.black)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(18)
+                .background(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .fill(Color(red: 0.90, green: 0.93, blue: 0.93).opacity(0.94))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.5), lineWidth: 1)
+                )
 
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(20)
         }
-        .background(
-            RoundedRectangle(cornerRadius: 30, style: .continuous)
-                .fill(Color.black.opacity(0.96))
-        )
     }
 
     private var testPage: some View {
@@ -545,11 +444,11 @@ struct DashboardPanel: View {
             VStack(alignment: .leading, spacing: 18) {
                 Text("Test")
                     .font(.system(size: 28, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.black)
 
                 Text("Start a timed validation run. Every 20 seconds the app logs GPS distance travelled, GPS vs raw OBD gap, GPS vs road-lock gap, and whether GPS and road lock appear to be on the same road.")
                     .font(.system(size: 15, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.74))
+                    .foregroundStyle(.black.opacity(0.58))
 
                 Button(action: viewModel.toggleTestSession) {
                     VStack(alignment: .leading, spacing: 10) {
@@ -585,40 +484,36 @@ struct DashboardPanel: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Status")
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.46))
+                        .foregroundStyle(.black.opacity(0.42))
 
                     Text(viewModel.testStatusMessage)
                         .font(.system(size: 16, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.black)
 
                     Text("Samples logged: \(viewModel.testSampleCount)")
                         .font(.system(size: 14, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.74))
+                        .foregroundStyle(.black.opacity(0.62))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(18)
                 .background(
                     RoundedRectangle(cornerRadius: 26, style: .continuous)
-                        .fill(Color.white.opacity(0.06))
+                        .fill(Color.white.opacity(0.64))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 26, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                        .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
                 )
 
                 Text("Stopping the run opens a CSV save sheet immediately.")
                     .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.68))
+                    .foregroundStyle(.black.opacity(0.58))
 
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(20)
         }
-        .background(
-            RoundedRectangle(cornerRadius: 30, style: .continuous)
-                .fill(Color.black.opacity(0.96))
-        )
     }
 
     private var connectButton: some View {
@@ -753,34 +648,6 @@ struct DashboardPanel: View {
         )
     }
 
-    private var snapButton: some View {
-        Button(action: viewModel.snapOBDToGPS) {
-            HStack(spacing: 12) {
-                Image(systemName: "location.fill")
-                    .font(.system(size: 18, weight: .bold))
-
-                Text("Snap To GPS")
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
-            }
-            .frame(maxWidth: .infinity, minHeight: 68)
-            .background(
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.99, green: 0.56, blue: 0.18),
-                                Color(red: 0.91, green: 0.33, blue: 0.04)
-                            ],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-            )
-            .foregroundStyle(.white)
-        }
-        .buttonStyle(.plain)
-    }
-
     private var pageDots: some View {
         HStack(spacing: 8) {
             pageDot(index: 0)
@@ -809,38 +676,15 @@ struct DashboardPanel: View {
         }
     }
 
-    private var verticalDragGesture: some Gesture {
-        DragGesture(minimumDistance: 16, coordinateSpace: .local)
-            .updating($dragOffset) { value, state, _ in
-                guard abs(value.translation.height) > abs(value.translation.width) else { return }
-                state = value.translation.height
-            }
-            .onEnded { value in
-                guard abs(value.translation.height) > abs(value.translation.width) else { return }
-
-                if value.translation.height < -60 {
-                    viewModel.isPanelExpanded = true
-                } else if value.translation.height > 60 {
-                    viewModel.isPanelExpanded = false
-                }
-            }
-    }
-
     private func selectorButton(title: String, systemImage: String, index: Int) -> some View {
         Button {
             withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
                 viewModel.selectedPanelPage = index
             }
         } label: {
-            HStack(spacing: 10) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 16, weight: .semibold))
-
-                Text(title)
-                    .font(.system(size: 16, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, minHeight: 56)
+            Image(systemName: systemImage)
+                .font(.system(size: 18, weight: .semibold))
+                .frame(maxWidth: .infinity, minHeight: 56)
             .background(
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .fill(index == viewModel.selectedPanelPage ? Color(red: 0.20, green: 0.28, blue: 0.44) : Color.white.opacity(0.62))
@@ -848,6 +692,7 @@ struct DashboardPanel: View {
             .foregroundStyle(index == viewModel.selectedPanelPage ? .white : .black)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(Text(title))
     }
 
     private func clampOffset(_ value: CGFloat) -> CGFloat {
@@ -882,11 +727,11 @@ struct DashboardPanel: View {
                 .frame(maxWidth: .infinity, minHeight: 72)
                 .background(
                     RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .fill(Color.white.opacity(0.08))
+                        .fill(Color(red: 0.98, green: 0.48, blue: 0.20).opacity(0.94))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                        .strokeBorder(Color(red: 0.78, green: 0.30, blue: 0.10).opacity(0.45), lineWidth: 1)
                 )
                 .foregroundStyle(.white)
         }
